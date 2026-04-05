@@ -35,6 +35,8 @@ export interface IOrder extends Document {
   payphoneTransactionId?: string;
   clientTransactionId?: string;
   shippingZoneName?: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 const orderSchema = new Schema<IOrder>(
