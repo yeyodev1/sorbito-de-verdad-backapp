@@ -209,10 +209,8 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
       ...(shippingZoneName && { shippingZoneName }),
     });
 
-    const frontendOrigin = req.headers.origin as string | undefined
-      ?? process.env.FRONTEND_URL
-      ?? 'http://localhost:5173';
-    const responseUrl = `${frontendOrigin}/pago/pendiente?orderId=${order._id}`;
+    const frontendBase = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+    const responseUrl = `${frontendBase}/pay-response?orderId=${order._id}`;
 
     const { payWithCard } = await payphoneService.prepareButton({
       amount: Math.round(total * 100),
