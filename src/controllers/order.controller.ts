@@ -159,6 +159,40 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response, next: N
   }
 };
 
+export const trackOrderByEmail = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email } = req.params;
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      res.status(HttpStatusCode.NotFound).send({ success: false, message: 'No se encontraron pedidos para este correo.' });
+      return;
+    }
+    const orders = await Order.find({
+      user: user._id,
+      status: { $in: ['confirmed', 'processing', 'shipped', 'delivered'] },
+    }).sort({ createdAt: -1 });
+
+    if (!orders.length) {
+      res.status(HttpStatusCode.NotFound).send({ success: false, message: 'No hay pedidos confirmados para este correo.' });
+      return;
+    }
+
+    res.send({
+      success: true,
+      data: orders.map((o) => ({
+        orderNumber: o.orderNumber,
+        status: o.status,
+        createdAt: o.createdAt,
+        shippingAddress: { city: o.shippingAddress.city, country: o.shippingAddress.country },
+        items: o.items.map((i) => ({ name: i.name, quantity: i.quantity })),
+        notes: o.notes,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const trackOrder = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { orderNumber } = req.params;

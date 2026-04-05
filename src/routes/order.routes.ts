@@ -9,12 +9,14 @@ import {
   getPaymentStatus,
   confirmPayphonePayment,
   trackOrder,
+  trackOrderByEmail,
 } from '../controllers/order.controller';
 import { authMiddleware, optionalAuthMiddleware } from '../middlewares/auth.middleware';
 
 const orderRouter = Router();
 
 // ── Public routes (no auth required) ────────────────────────────────────────
+orderRouter.get('/track/by-email/:email', trackOrderByEmail);
 orderRouter.get('/track/:orderNumber', trackOrder);
 orderRouter.post('/payphone', optionalAuthMiddleware, createPayphoneOrder);
 orderRouter.post('/confirm-payment', optionalAuthMiddleware, confirmPayphonePayment);
