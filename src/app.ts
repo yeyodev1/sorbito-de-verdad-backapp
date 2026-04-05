@@ -39,7 +39,7 @@ export function createApp() {
   app.use(express.json({ limit: "50mb" }));
 
   app.get("/", (_req, res) => {
-    res.send("Server is alive");
+    res.send("Sorbito de Verdad API: Sirviendo la esencia, sorbo a sorbo.");
   });
 
   routerApi(app);
