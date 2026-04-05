@@ -209,16 +209,22 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
       ...(shippingZoneName && { shippingZoneName }),
     });
 
-    // Return all params needed for the client-side PayPhone widget (Cajita de Pagos)
+    const frontendBase = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+    const { payWithPayPhone } = await payphoneService.prepareButton({
+      amount: Math.round(total * 100),
+      amountWithoutTax: Math.round(subtotal * 100),
+      clientTransactionId,
+      responseUrl: `${frontendBase}/pay-response`,
+      cancellationUrl: `${frontendBase}/carrito`,
+      reference: `SDV-${String(order._id).slice(-8).toUpperCase()}`,
+    });
+
     res.status(HttpStatusCode.Created).send({
       success: true,
       data: {
         orderId: order._id,
         clientTransactionId,
-        amount: Math.round(total * 100),
-        amountWithoutTax: Math.round(subtotal * 100),
-        token: process.env.PAYPHONE_TOKEN,
-        storeId: process.env.PAYPHONE_STORE_ID,
+        payWithPayPhone,
       },
     });
   } catch (error) {
@@ -265,7 +271,7 @@ export const confirmPayphonePayment = async (req: AuthRequest, res: Response, ne
       return;
     }
 
-    const result = await payphoneService.confirmButtonV2(Number(id), clientTransactionId);
+    const result = await payphoneService.confirmButton(Number(id), clientTransactionId);
 
     const order = await Order.findOne({ clientTransactionId });
     if (!order) {
