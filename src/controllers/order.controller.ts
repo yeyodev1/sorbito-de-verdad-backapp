@@ -162,7 +162,7 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response, next: N
 export const trackOrderByEmail = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email } = req.params;
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ email: String(email).toLowerCase() });
     if (!user) {
       res.status(HttpStatusCode.NotFound).send({ success: false, message: 'No se encontraron pedidos para este correo.' });
       return;
