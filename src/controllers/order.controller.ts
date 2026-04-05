@@ -209,22 +209,16 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
       ...(shippingZoneName && { shippingZoneName }),
     });
 
-    const frontendBase = process.env.FRONTEND_URL ?? 'http://localhost:5173';
-    const responseUrl = `${frontendBase}/pay-response?orderId=${order._id}`;
-
-    const { payWithCard } = await payphoneService.prepareButton({
-      amount: Math.round(total * 100),
-      amountWithoutTax: Math.round(subtotal * 100),
-      clientTransactionId,
-      responseUrl,
-    });
-
+    // Return all params needed for the client-side PayPhone widget (Cajita de Pagos)
     res.status(HttpStatusCode.Created).send({
       success: true,
       data: {
         orderId: order._id,
         clientTransactionId,
-        payWithCard,
+        amount: Math.round(total * 100),
+        amountWithoutTax: Math.round(subtotal * 100),
+        token: process.env.PAYPHONE_TOKEN,
+        storeId: process.env.PAYPHONE_STORE_ID,
       },
     });
   } catch (error) {
@@ -261,32 +255,45 @@ export const payphoneWebhook = async (req: Request, res: Response, next: NextFun
   }
 };
 
-export const verifyPayphonePayment = async (req: AuthRequest, res: Response, next: NextFunction) => {
+export const confirmPayphonePayment = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { payphoneTransactionId, orderId } = req.body as { payphoneTransactionId?: string; orderId?: string };
+    // id = PayPhone transaction ID (number), clientTransactionId = our internal ID
+    const { id, clientTransactionId } = req.body as { id?: number | string; clientTransactionId?: string };
 
-    if (!payphoneTransactionId || !orderId) {
-      res.status(HttpStatusCode.BadRequest).send({ success: false, message: 'payphoneTransactionId y orderId son requeridos' });
+    if (!id || !clientTransactionId) {
+      res.status(HttpStatusCode.BadRequest).send({ success: false, message: 'id y clientTransactionId son requeridos' });
       return;
     }
 
-    const result = await payphoneService.verifySale(payphoneTransactionId);
-    const order = await Order.findOne({ _id: orderId, user: req.user?.userId });
+    const result = await payphoneService.confirmButtonV2(Number(id), clientTransactionId);
 
+    const order = await Order.findOne({ clientTransactionId });
     if (!order) {
       res.status(HttpStatusCode.NotFound).send({ success: false, message: 'Orden no encontrada' });
       return;
     }
 
-    if (result.statusCode === 3) {
+    if (result.approved) {
       order.paymentStatus = 'paid';
       order.status = 'confirmed';
-    } else if (result.statusCode === 2) {
+      // Fire-and-forget confirmation email
+      const buyer = await User.findById(order.user).select('name email');
+      if (buyer) {
+        emailService.sendOrderConfirmation(buyer.email, buyer.name, String(order._id), order.total).catch(() => {});
+      }
+    } else {
       order.paymentStatus = 'failed';
     }
     await order.save();
 
-    res.send({ success: true, data: { paymentStatus: order.paymentStatus, status: order.status } });
+    res.send({
+      success: true,
+      data: {
+        orderId: order._id,
+        paymentStatus: order.paymentStatus,
+        approved: result.approved,
+      },
+    });
   } catch (error) {
     next(error);
   }

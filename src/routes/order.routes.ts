@@ -7,7 +7,7 @@ import {
   updateOrderStatus,
   createPayphoneOrder,
   getPaymentStatus,
-  verifyPayphonePayment,
+  confirmPayphonePayment,
 } from '../controllers/order.controller';
 import { authMiddleware } from '../middlewares/auth.middleware';
 
@@ -17,7 +17,7 @@ orderRouter.use(authMiddleware);
 
 orderRouter.post('/', createOrder);
 orderRouter.post('/payphone', createPayphoneOrder);
-orderRouter.post('/verify-payment', verifyPayphonePayment);
+orderRouter.post('/confirm-payment', confirmPayphonePayment);
 orderRouter.get('/my', getMyOrders);
 orderRouter.get('/admin', getAllOrders);
 orderRouter.get('/:id/payment-status', getPaymentStatus);

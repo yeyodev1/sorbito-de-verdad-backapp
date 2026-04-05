@@ -4,37 +4,22 @@ const PAYPHONE_BASE_URL = 'https://pay.payphonetodoesposible.com/api';
 const PAYPHONE_TOKEN = process.env.PAYPHONE_TOKEN;
 const PAYPHONE_STORE_ID = process.env.PAYPHONE_STORE_ID;
 
-interface PrepareButtonParams {
-  amount: number;
-  amountWithoutTax: number;
-  clientTransactionId: string;
-  responseUrl: string;
-}
-
-interface PrepareButtonResult {
-  payWithCard: string;
-}
-
-interface VerifySaleResult {
+interface ConfirmButtonResult {
   statusCode: number;
   transactionStatus: string;
   authorizationCode?: string;
+  approved: boolean;
 }
 
 export const payphoneService = {
-  async prepareButton(params: PrepareButtonParams): Promise<PrepareButtonResult> {
-    const { amount, amountWithoutTax, clientTransactionId, responseUrl } = params;
+  /**
+   * Confirma una transacción de la Cajita de Pagos (widget JS).
+   * Se llama desde el backend después de que PayPhone redirige al usuario.
+   */
+  async confirmButtonV2(id: number, clientTxId: string): Promise<ConfirmButtonResult> {
     const response = await axios.post(
-      `${PAYPHONE_BASE_URL}/button/Prepare`,
-      {
-        amount,
-        amountWithoutTax,
-        tax: amount - amountWithoutTax,
-        clientTransactionId,
-        responseUrl,
-        storeId: PAYPHONE_STORE_ID,
-        currency: 'USD',
-      },
+      `${PAYPHONE_BASE_URL}/button/V2/Confirm`,
+      { id, clientTxId },
       {
         headers: {
           Authorization: `Bearer ${PAYPHONE_TOKEN}`,
@@ -42,10 +27,16 @@ export const payphoneService = {
         },
       }
     );
-    return { payWithCard: response.data.payWithCard };
+    const data = response.data;
+    return {
+      statusCode: data.statusCode,
+      transactionStatus: data.transactionStatus,
+      authorizationCode: data.authorizationCode,
+      approved: data.statusCode === 3,
+    };
   },
 
-  async verifySale(payphoneTransactionId: string): Promise<VerifySaleResult> {
+  async verifySale(payphoneTransactionId: string): Promise<{ statusCode: number; transactionStatus: string; authorizationCode?: string }> {
     const response = await axios.get(
       `${PAYPHONE_BASE_URL}/Sale/${payphoneTransactionId}`,
       {
