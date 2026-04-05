@@ -286,6 +286,174 @@ export class EmailService {
 
     return { success: true, messageId: data?.id };
   }
+
+
+  /**
+   * Envía credenciales de la cuenta creada automáticamente para compra de invitado.
+   */
+  async sendGuestAccountCreated(to: string, name: string, tempPassword: string): Promise<EmailResult> {
+    const BASE = DEFAULT_FRONTEND_URL;
+    const firstName = name.trim().split(' ')[0];
+
+    const body = `
+      <div style="text-align:center;margin-bottom:28px;">
+        <div style="display:inline-block;width:64px;height:64px;background:#F3EFE9;border-radius:50%;line-height:64px;font-size:28px;margin-bottom:12px;">☕</div>
+        <h2 style="margin:0 0 6px;color:#1A1A1A;font-size:20px;font-weight:700;">¡Tu pedido va en camino!</h2>
+        <p style="margin:0;color:#C8956C;font-size:13px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;">Cuenta creada automáticamente</p>
+      </div>
+
+      <p style="margin:0 0 16px;color:#1A1A1A;font-size:15px;line-height:1.6;">
+        Hola <strong>${firstName}</strong>, creamos una cuenta para que puedas rastrear tu pedido.
+      </p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" role="presentation"
+        style="background:#F3EFE9;border-radius:10px;border-left:4px solid #C8956C;margin:0 0 24px;">
+        <tr>
+          <td style="padding:20px 24px;">
+            <p style="margin:0 0 10px;color:#6B6560;font-size:12px;text-transform:uppercase;letter-spacing:0.1em;font-weight:600;">Tus credenciales de acceso</p>
+            <p style="margin:0 0 6px;color:#1A1A1A;font-size:14px;">
+              <span style="color:#6B6560;">Email:</span> <strong>${to}</strong>
+            </p>
+            <p style="margin:0;color:#1A1A1A;font-size:14px;">
+              <span style="color:#6B6560;">Contraseña temporal:</span>
+              <strong style="font-family:monospace;background:#fff;padding:2px 8px;border-radius:4px;border:1px solid #EDE8E3;">${tempPassword}</strong>
+            </p>
+          </td>
+        </tr>
+      </table>
+
+      <p style="margin:0 0 24px;color:#6B6560;font-size:13px;line-height:1.6;">
+        Te recomendamos cambiar tu contraseña desde tu perfil una vez que accedas.
+      </p>
+
+      <table cellpadding="0" cellspacing="0" width="100%" role="presentation">
+        <tr>
+          <td align="center">
+            <a href="${BASE}/login"
+               style="display:inline-block;background:#C8956C;color:#ffffff;text-decoration:none;padding:14px 40px;border-radius:8px;font-size:15px;font-weight:600;">
+              Acceder a mi cuenta
+            </a>
+          </td>
+        </tr>
+      </table>
+
+      <p style="margin:24px 0 0;color:#6B6560;font-size:13px;line-height:1.6;text-align:center;border-top:1px solid #EDE8E3;padding-top:20px;">
+        Con cariño, <strong style="color:#1A1A1A;">El equipo de Sorbito de Verdad</strong>
+      </p>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to,
+      subject: '☕ Tu pedido está confirmado — Aquí tus datos de acceso',
+      html: baseTemplate('¡Bienvenido/a!', `${firstName}, tu cuenta fue creada. Aquí están tus credenciales.`, body),
+    });
+
+    if (error) {
+      logEmailError('sendGuestAccountCreated', error);
+      return { success: false, error: error.message };
+    }
+
+    return { success: true, messageId: data?.id };
+  }
+
+  /**
+   * Notifica al cliente sobre un cambio de estado en su pedido.
+   */
+  async sendOrderStatusUpdate(
+    to: string,
+    name: string,
+    orderId: string,
+    orderNumber: string,
+    newStatus: string,
+    adminNotes?: string,
+  ): Promise<EmailResult> {
+    const statusLabels: Record<string, string> = {
+      confirmed:  'Confirmado',
+      processing: 'En proceso',
+      shipped:    'Enviado',
+      delivered:  'Entregado',
+      cancelled:  'Cancelado',
+    };
+
+    const statusIcons: Record<string, string> = {
+      confirmed:  '✅',
+      processing: '⚙️',
+      shipped:    '🚚',
+      delivered:  '🏠',
+      cancelled:  '❌',
+    };
+
+    const statusMessages: Record<string, string> = {
+      confirmed:  'Tu pedido ha sido confirmado y comenzaremos a prepararlo pronto.',
+      processing: 'Estamos preparando tu pedido con todo el cariño del mundo.',
+      shipped:    'Tu pedido está en camino. ¡Pronto lo tendrás en tus manos!',
+      delivered:  'Tu pedido fue entregado. ¡Esperamos que lo disfrutes mucho!',
+      cancelled:  'Tu pedido ha sido cancelado. Si tienes dudas, contáctanos.',
+    };
+
+    const label   = statusLabels[newStatus]   || newStatus;
+    const icon    = statusIcons[newStatus]     || '📦';
+    const message = statusMessages[newStatus]  || 'El estado de tu pedido ha cambiado.';
+    const orderUrl = `${DEFAULT_FRONTEND_URL}/mis-pedidos/${orderId}`;
+    const formattedOrder = orderNumber || `#${orderId.slice(-8).toUpperCase()}`;
+
+    const notesBlock = adminNotes
+      ? `<table cellpadding="0" cellspacing="0" width="100%" role="presentation"
+           style="background:#F3EFE9;border-radius:10px;border-left:4px solid #C8956C;margin:24px 0;">
+           <tr>
+             <td style="padding:16px 20px;">
+               <p style="margin:0 0 6px;color:#6B6560;font-size:12px;text-transform:uppercase;letter-spacing:0.1em;font-weight:600;">Nota del equipo</p>
+               <p style="margin:0;color:#1A1A1A;font-size:14px;line-height:1.6;">${adminNotes}</p>
+             </td>
+           </tr>
+         </table>`
+      : '';
+
+    const body = `
+      <div style="text-align:center;margin-bottom:28px;">
+        <div style="display:inline-block;width:64px;height:64px;background:#F3EFE9;border-radius:50%;line-height:64px;font-size:28px;margin-bottom:12px;">${icon}</div>
+        <h2 style="margin:0 0 6px;color:#1A1A1A;font-size:20px;font-weight:700;">Estado: ${label}</h2>
+        <p style="margin:0;color:#C8956C;font-size:13px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;">${formattedOrder}</p>
+      </div>
+
+      <p style="margin:0 0 16px;color:#1A1A1A;font-size:15px;line-height:1.6;">
+        Hola <strong>${name}</strong>,
+      </p>
+      <p style="margin:0 0 8px;color:#6B6560;font-size:15px;line-height:1.7;">${message}</p>
+
+      ${notesBlock}
+
+      <table cellpadding="0" cellspacing="0" width="100%" role="presentation" style="margin-top:28px;">
+        <tr>
+          <td align="center">
+            <a href="${orderUrl}"
+               style="display:inline-block;background:#1A1A1A;color:#ffffff;text-decoration:none;padding:14px 40px;border-radius:8px;font-size:15px;font-weight:600;">
+              Ver detalles del pedido
+            </a>
+          </td>
+        </tr>
+      </table>
+
+      <p style="margin:24px 0 0;color:#6B6560;font-size:13px;line-height:1.6;text-align:center;border-top:1px solid #EDE8E3;padding-top:20px;">
+        Con cariño, <strong style="color:#1A1A1A;">El equipo de Sorbito de Verdad</strong>
+      </p>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: FROM_EMAIL,
+      to,
+      subject: `${icon} Tu pedido ${formattedOrder} está: ${label} — Sorbito de Verdad`,
+      html: baseTemplate(`Pedido ${label}`, `${name}, el estado de tu pedido cambió a: ${label}`, body),
+    });
+
+    if (error) {
+      logEmailError('sendOrderStatusUpdate', error);
+      return { success: false, error: error.message };
+    }
+
+    return { success: true, messageId: data?.id };
+  }
 }
 
 export const emailService = new EmailService();

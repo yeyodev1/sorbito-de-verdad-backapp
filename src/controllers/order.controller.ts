@@ -1,5 +1,6 @@
 import { HttpStatusCode } from 'axios';
 import { Request, Response, NextFunction } from 'express';
+import bcrypt from 'bcryptjs';
 import { Order } from '../models/Order.model';
 import { Product } from '../models/Product.model';
 import { User } from '../models/User.model';
@@ -103,7 +104,7 @@ export const getOrderById = async (req: AuthRequest, res: Response, next: NextFu
 
 export const getAllOrders = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    if (req.user?.accountType !== 'admin') {
+    if (req.user?.accountType !== 'admin' && req.user?.accountType !== 'owner') {
       res.status(HttpStatusCode.Forbidden).send({ success: false, message: 'Sin permisos' });
       return;
     }
@@ -118,21 +119,76 @@ export const getAllOrders = async (req: AuthRequest, res: Response, next: NextFu
 
 export const updateOrderStatus = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    if (req.user?.accountType !== 'admin') {
+    if (req.user?.accountType !== 'admin' && req.user?.accountType !== 'owner') {
       res.status(HttpStatusCode.Forbidden).send({ success: false, message: 'Sin permisos' });
       return;
     }
-    const { status, paymentStatus } = req.body;
-    const order = await Order.findByIdAndUpdate(
-      req.params.id,
-      { ...(status && { status }), ...(paymentStatus && { paymentStatus }) },
-      { new: true }
-    );
+    const { status, paymentStatus, adminNotes } = req.body;
+
+    const order = await Order.findById(req.params.id).populate<{ user: { name: string; email: string } }>('user', 'name email');
     if (!order) {
       res.status(HttpStatusCode.NotFound).send({ success: false, message: 'Orden no encontrada' });
       return;
     }
+
+    const previousStatus = order.status;
+
+    if (status) order.status = status;
+    if (paymentStatus) order.paymentStatus = paymentStatus;
+    if (adminNotes !== undefined) order.notes = adminNotes;
+    await order.save();
+
+    // Send status-change email if status actually changed
+    if (status && status !== previousStatus && order.user) {
+      const buyer = order.user as unknown as { name: string; email: string };
+      if (buyer?.email) {
+        emailService.sendOrderStatusUpdate(
+          buyer.email,
+          buyer.name,
+          String(order._id),
+          order.orderNumber,
+          status,
+          adminNotes,
+        ).catch(() => {});
+      }
+    }
+
     res.send({ success: true, data: order });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const trackOrder = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { orderNumber } = req.params;
+    const order = await Order.findOne({
+      orderNumber,
+      status: { $in: ['confirmed', 'processing', 'shipped', 'delivered'] },
+    });
+
+    if (!order) {
+      res.status(HttpStatusCode.NotFound).send({
+        success: false,
+        message: 'Pedido no encontrado. Verifica el número o aún no fue confirmado.',
+      });
+      return;
+    }
+
+    res.send({
+      success: true,
+      data: {
+        orderNumber: order.orderNumber,
+        status: order.status,
+        createdAt: order.createdAt,
+        shippingAddress: {
+          city: order.shippingAddress.city,
+          country: order.shippingAddress.country,
+        },
+        items: order.items.map((i) => ({ name: i.name, quantity: i.quantity })),
+        notes: order.notes,
+      },
+    });
   } catch (error) {
     next(error);
   }
@@ -140,7 +196,7 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response, next: N
 
 export const createPayphoneOrder = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { items, shippingAddress, notes, shippingZoneId } = req.body;
+    const { items, shippingAddress, notes, shippingZoneId, email: bodyEmail } = req.body;
 
     if (!items || !items.length || !shippingAddress) {
       res.status(HttpStatusCode.BadRequest).send({
@@ -193,10 +249,35 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
 
     const total = subtotal + shipping;
 
+    // ── Resolve user (logged-in or guest auto-account) ────────────────────────
+    let userId: string;
+    if (req.user?.userId) {
+      userId = req.user.userId;
+    } else {
+      const email = bodyEmail || shippingAddress?.email;
+      if (!email) {
+        res.status(HttpStatusCode.BadRequest).send({ success: false, message: 'Email es requerido para continuar' });
+        return;
+      }
+      let guestUser = await User.findOne({ email });
+      if (!guestUser) {
+        const tempPassword = Math.random().toString(36).slice(-6) + Math.random().toString(36).slice(-4).toUpperCase() + '!';
+        const hashed = await bcrypt.hash(tempPassword, 10);
+        guestUser = await User.create({
+          name: shippingAddress?.name || email.split('@')[0],
+          email,
+          password: hashed,
+          accountType: 'customer',
+        });
+        emailService.sendGuestAccountCreated(email, guestUser.name, tempPassword).catch(() => {});
+      }
+      userId = String(guestUser._id);
+    }
+
     const clientTransactionId = Date.now().toString();
 
     const order = await Order.create({
-      user: req.user?.userId,
+      user: userId,
       items: resolvedItems,
       subtotal,
       shipping,

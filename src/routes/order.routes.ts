@@ -8,17 +8,22 @@ import {
   createPayphoneOrder,
   getPaymentStatus,
   confirmPayphonePayment,
+  trackOrder,
 } from '../controllers/order.controller';
-import { authMiddleware } from '../middlewares/auth.middleware';
+import { authMiddleware, optionalAuthMiddleware } from '../middlewares/auth.middleware';
 
 const orderRouter = Router();
 
+// ── Public routes (no auth required) ────────────────────────────────────────
+orderRouter.get('/track/:orderNumber', trackOrder);
+orderRouter.post('/payphone', optionalAuthMiddleware, createPayphoneOrder);
+orderRouter.post('/confirm-payment', optionalAuthMiddleware, confirmPayphonePayment);
+
+// ── Protected routes ─────────────────────────────────────────────────────────
 orderRouter.use(authMiddleware);
 
 orderRouter.post('/', createOrder);
-orderRouter.post('/payphone', createPayphoneOrder);
-orderRouter.post('/confirm-payment', confirmPayphonePayment);
-orderRouter.get('/my', getMyOrders);
+orderRouter.get('/my-orders', getMyOrders);
 orderRouter.get('/admin', getAllOrders);
 orderRouter.get('/:id/payment-status', getPaymentStatus);
 orderRouter.get('/:id', getOrderById);

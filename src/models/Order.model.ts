@@ -16,6 +16,7 @@ export interface IShippingAddress {
   state?: string;
   country: string;
   zip?: string;
+  mapsUrl?: string;
 }
 
 export interface IOrder extends Document {
@@ -72,6 +73,7 @@ const orderSchema = new Schema<IOrder>(
       state: { type: String },
       country: { type: String, required: true },
       zip: { type: String },
+      mapsUrl: { type: String },
     },
     notes: { type: String },
     payphoneTransactionId: { type: String },
