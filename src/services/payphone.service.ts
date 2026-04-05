@@ -1,8 +1,39 @@
-import axios from 'axios';
+import 'dotenv/config'
+import axios, { AxiosError } from 'axios';
 
 const PAYPHONE_BASE_URL = 'https://pay.payphonetodoesposible.com/api';
-const PAYPHONE_TOKEN = process.env.PAYPHONE_TOKEN;
-const PAYPHONE_STORE_ID = process.env.PAYPHONE_STORE_ID;
+
+// Read at call time so Vercel env vars are available
+function getToken() {
+  const t = process.env.PAYPHONE_TOKEN;
+  if (!t) throw new Error('PAYPHONE_TOKEN env var is not set');
+  return t;
+}
+function getStoreId() {
+  const s = process.env.PAYPHONE_STORE_ID;
+  if (!s) throw new Error('PAYPHONE_STORE_ID env var is not set');
+  return s;
+}
+
+function authHeaders() {
+  return {
+    Authorization: `Bearer ${getToken()}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+// Log PayPhone errors with full response body for debugging
+function logPayPhoneError(context: string, error: unknown) {
+  if (error instanceof AxiosError) {
+    console.error(`[PayPhone] ${context} failed:`, {
+      status: error.response?.status,
+      data: JSON.stringify(error.response?.data),
+      payload: JSON.stringify(error.config?.data),
+    });
+  } else {
+    console.error(`[PayPhone] ${context} error:`, error);
+  }
+}
 
 interface PrepareButtonResult {
   payWithPayPhone: string;
@@ -17,8 +48,7 @@ interface ConfirmButtonResult {
 
 export const payphoneService = {
   /**
-   * Prepara el pago con la Cajita de Pagos (button/Prepare).
-   * Devuelve una URL de PayPhone a la que redirigir al usuario.
+   * Prepara el pago — devuelve URL de PayPhone donde redirigir al usuario.
    */
   async prepareButton(params: {
     amount: number;
@@ -28,63 +58,66 @@ export const payphoneService = {
     cancellationUrl: string;
     reference: string;
   }): Promise<PrepareButtonResult> {
-    const response = await axios.post(
-      `${PAYPHONE_BASE_URL}/button/Prepare`,
-      {
-        amount: params.amount,
-        amountWithoutTax: params.amountWithoutTax,
-        currency: 'USD',
-        clientTransactionId: params.clientTransactionId,
-        responseUrl: params.responseUrl,
-        cancellationUrl: params.cancellationUrl,
-        storeId: PAYPHONE_STORE_ID,
-        reference: params.reference,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${PAYPHONE_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-    return { payWithPayPhone: response.data.payWithPayPhone };
+    const payload = {
+      amount: params.amount,
+      amountWithoutTax: params.amountWithoutTax,
+      currency: 'USD',
+      clientTransactionId: params.clientTransactionId,
+      responseUrl: params.responseUrl,
+      cancellationUrl: params.cancellationUrl,
+      storeId: getStoreId(),
+      reference: params.reference,
+    };
+
+    console.log('[PayPhone] button/Prepare payload:', JSON.stringify(payload));
+
+    try {
+      const response = await axios.post(
+        `${PAYPHONE_BASE_URL}/button/Prepare`,
+        payload,
+        { headers: authHeaders() }
+      );
+      console.log('[PayPhone] button/Prepare response:', JSON.stringify(response.data));
+      return { payWithPayPhone: response.data.payWithPayPhone };
+    } catch (error) {
+      logPayPhoneError('button/Prepare', error);
+      throw error;
+    }
   },
 
   /**
    * Confirma el resultado del pago (button/Confirm).
    */
   async confirmButton(id: number, clientTransactionId: string): Promise<ConfirmButtonResult> {
-    const response = await axios.post(
-      `${PAYPHONE_BASE_URL}/button/Confirm`,
-      { id, clientTransactionId },
-      {
-        headers: {
-          Authorization: `Bearer ${PAYPHONE_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-    const data = response.data;
-    return {
-      statusCode: data.statusCode,
-      transactionStatus: data.transactionStatus,
-      authorizationCode: data.authorizationCode,
-      approved: data.transactionStatus === 'Approved',
-    };
+    const payload = { id, clientTransactionId };
+    console.log('[PayPhone] button/Confirm payload:', JSON.stringify(payload));
+
+    try {
+      const response = await axios.post(
+        `${PAYPHONE_BASE_URL}/button/Confirm`,
+        payload,
+        { headers: authHeaders() }
+      );
+      const data = response.data;
+      console.log('[PayPhone] button/Confirm response:', JSON.stringify(data));
+      return {
+        statusCode: data.statusCode,
+        transactionStatus: data.transactionStatus,
+        authorizationCode: data.authorizationCode,
+        approved: data.transactionStatus === 'Approved',
+      };
+    } catch (error) {
+      logPayPhoneError('button/Confirm', error);
+      throw error;
+    }
   },
 
   async verifySale(payphoneTransactionId: string): Promise<{ statusCode: number; transactionStatus: string; authorizationCode?: string }> {
     const response = await axios.get(
       `${PAYPHONE_BASE_URL}/Sale/${payphoneTransactionId}`,
-      {
-        headers: {
-          Authorization: `Bearer ${PAYPHONE_TOKEN}`,
-        },
-      }
+      { headers: authHeaders() }
     );
-
     const { statusCode, transactionStatus, authorizationCode } = response.data;
-
     return { statusCode, transactionStatus, authorizationCode };
   },
 };

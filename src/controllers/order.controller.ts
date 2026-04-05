@@ -212,7 +212,7 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
     const frontendBase = process.env.FRONTEND_URL ?? 'http://localhost:5173';
     const { payWithPayPhone } = await payphoneService.prepareButton({
       amount: Math.round(total * 100),
-      amountWithoutTax: Math.round(subtotal * 100),
+      amountWithoutTax: Math.round(total * 100),
       clientTransactionId,
       responseUrl: `${frontendBase}/pay-response`,
       cancellationUrl: `${frontendBase}/carrito`,
