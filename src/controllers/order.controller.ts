@@ -252,7 +252,7 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
         });
         return;
       }
-      if (product.stock < item.quantity) {
+      if (!product.allowBackorder && product.stock < item.quantity) {
         res.status(HttpStatusCode.BadRequest).send({
           success: false,
           message: `Stock insuficiente para: ${product.name}`,
