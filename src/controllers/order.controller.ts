@@ -427,6 +427,33 @@ export const confirmPayphonePayment = async (req: AuthRequest, res: Response, ne
   }
 };
 
+export const resendOrderEmail = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    if (req.user?.accountType !== 'admin' && req.user?.accountType !== 'owner') {
+      res.status(HttpStatusCode.Forbidden).send({ success: false, message: 'Sin permisos' });
+      return;
+    }
+
+    const order = await Order.findById(req.params.id);
+    if (!order) {
+      res.status(HttpStatusCode.NotFound).send({ success: false, message: 'Orden no encontrada' });
+      return;
+    }
+
+    const buyer = await User.findById(order.user).select('name email');
+    if (!buyer) {
+      res.status(HttpStatusCode.NotFound).send({ success: false, message: 'Cliente no encontrado' });
+      return;
+    }
+
+    await emailService.sendOrderConfirmation(buyer.email, buyer.name, String(order._id), order.total);
+
+    res.send({ success: true, message: `Correo reenviado a ${buyer.email}` });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const getPaymentStatus = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     const order = await Order.findOne({ _id: req.params.id, user: req.user?.userId });

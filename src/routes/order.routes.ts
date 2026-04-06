@@ -10,6 +10,7 @@ import {
   confirmPayphonePayment,
   trackOrder,
   trackOrderByEmail,
+  resendOrderEmail,
 } from '../controllers/order.controller';
 import { authMiddleware, optionalAuthMiddleware } from '../middlewares/auth.middleware';
 
@@ -28,6 +29,7 @@ orderRouter.post('/', createOrder);
 orderRouter.get('/my-orders', getMyOrders);
 orderRouter.get('/admin', getAllOrders);
 orderRouter.get('/:id/payment-status', getPaymentStatus);
+orderRouter.post('/:id/resend-email', resendOrderEmail);
 orderRouter.get('/:id', getOrderById);
 orderRouter.patch('/:id/status', updateOrderStatus);
 
