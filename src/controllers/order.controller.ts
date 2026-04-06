@@ -11,7 +11,7 @@ import { payphoneService } from '../services/payphone.service';
 
 export const createOrder = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { items, shippingAddress, paymentMethod = 'manual', notes, shippingZoneId } = req.body;
+    const { items, shippingAddress, paymentMethod = 'manual', notes, shippingZoneId, identificationNumber } = req.body;
 
     if (!items || !items.length || !shippingAddress) {
       res.status(HttpStatusCode.BadRequest).send({ success: false, message: 'Items y dirección de envío son requeridos' });
@@ -67,6 +67,7 @@ export const createOrder = async (req: AuthRequest, res: Response, next: NextFun
       shippingAddress,
       paymentMethod,
       notes,
+      ...(identificationNumber && { identificationNumber }),
       ...(shippingZoneName && { shippingZoneName }),
     });
 
@@ -232,7 +233,7 @@ export const trackOrder = async (req: Request, res: Response, next: NextFunction
 
 export const createPayphoneOrder = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    const { items, shippingAddress, notes, shippingZoneId, email: bodyEmail } = req.body;
+    const { items, shippingAddress, notes, shippingZoneId, email: bodyEmail, identificationNumber } = req.body;
 
     if (!items || !items.length || !shippingAddress) {
       res.status(HttpStatusCode.BadRequest).send({
@@ -326,6 +327,7 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
       paymentMethod: 'payphone',
       notes,
       clientTransactionId,
+      ...(identificationNumber && { identificationNumber }),
       ...(shippingZoneName && { shippingZoneName }),
       ...(guestTempPassword && { guestTempPassword }),
     });

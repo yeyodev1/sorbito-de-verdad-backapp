@@ -31,6 +31,7 @@ export interface IOrder extends Document {
   paymentStatus: 'pending' | 'paid' | 'failed' | 'refunded';
   paymentMethod: string;
   shippingAddress: IShippingAddress;
+  identificationNumber?: string;
   notes?: string;
   payphoneTransactionId?: string;
   clientTransactionId?: string;
@@ -79,6 +80,7 @@ const orderSchema = new Schema<IOrder>(
       zip: { type: String },
       mapsUrl: { type: String },
     },
+    identificationNumber: { type: String },
     notes: { type: String },
     payphoneTransactionId: { type: String },
     clientTransactionId: { type: String },
