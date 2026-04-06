@@ -429,14 +429,17 @@ export const confirmPayphonePayment = async (req: AuthRequest, res: Response, ne
 
 export const resendOrderEmail = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
-    if (req.user?.accountType !== 'admin' && req.user?.accountType !== 'owner') {
-      res.status(HttpStatusCode.Forbidden).send({ success: false, message: 'Sin permisos' });
-      return;
-    }
-
     const order = await Order.findById(req.params.id);
     if (!order) {
       res.status(HttpStatusCode.NotFound).send({ success: false, message: 'Orden no encontrada' });
+      return;
+    }
+
+    const isAdmin = req.user?.accountType === 'admin' || req.user?.accountType === 'owner';
+    const isOrderOwner = String(order.user) === req.user?.userId;
+
+    if (!isAdmin && !isOrderOwner) {
+      res.status(HttpStatusCode.Forbidden).send({ success: false, message: 'Sin permisos' });
       return;
     }
 
