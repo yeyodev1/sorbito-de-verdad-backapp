@@ -4,6 +4,7 @@ import { Resend } from 'resend';
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 const FROM_EMAIL = 'Sorbito de Verdad <notificaciones@sorbitodeverdad.com>';
+const REPLY_TO = 'hola@sorbitodeverdad.com';
 const DEFAULT_FRONTEND_URL = process.env.FRONTEND_URL || process.env.DEFAULT_FRONTEND_URL || 'http://localhost:5173';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -68,8 +69,11 @@ function baseTemplate(title: string, preheader: string, bodyHtml: string): strin
                 © 2026 Sorbito de Verdad ·
                 <a href="${DEFAULT_FRONTEND_URL}" style="color:#C8956C;text-decoration:none;">sorbitodeverdad.com</a>
               </p>
-              <p style="margin:0;color:#9B9590;font-size:11px;">
+              <p style="margin:0 0 6px;color:#9B9590;font-size:11px;">
                 Si no realizaste esta acción, puedes ignorar este correo.
+              </p>
+              <p style="margin:0;color:#9B9590;font-size:10px;">
+                ¿Este correo llegó a spam? Márcalo como "No es spam" para recibirlos correctamente.
               </p>
             </td>
           </tr>
@@ -120,8 +124,10 @@ export class EmailService {
 
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
+      replyTo: REPLY_TO,
       to,
       subject: 'Recupera tu contraseña — Sorbito de Verdad',
+      text: `Hola ${name},\n\nRecibimos una solicitud para restablecer tu contraseña.\n\nEnlace (válido 1 hora): ${resetUrl}\n\nSi no solicitaste esto, ignora este correo.\n\n– Sorbito de Verdad`,
       html: baseTemplate('Recupera tu contraseña', `Hola ${name}, aquí está tu enlace para restablecer tu contraseña.`, body),
     });
 
@@ -222,8 +228,10 @@ export class EmailService {
 
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
+      replyTo: REPLY_TO,
       to,
-      subject: `¡Bienvenido/a a Sorbito de Verdad, ${firstName}! ☕`,
+      subject: `Bienvenido/a a Sorbito de Verdad, ${firstName}`,
+      text: `Hola ${firstName},\n\nBienvenido/a a Sorbito de Verdad. Tu cuenta está lista.\n\nExplora nuestras tazas artesanales: ${BASE}/tienda\nVe tu cuenta: ${BASE}/perfil\n\n– Sorbito de Verdad`,
       html: baseTemplate('¡Te damos la bienvenida!', `${firstName}, tu cuenta en Sorbito de Verdad está lista. Explora nuestras tazas artesanales.`, body),
     });
 
@@ -274,8 +282,10 @@ export class EmailService {
 
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
+      replyTo: REPLY_TO,
       to,
-      subject: `Pedido confirmado #${orderId.slice(-8).toUpperCase()} — Sorbito de Verdad`,
+      subject: `Pedido recibido #${orderId.slice(-8).toUpperCase()} — Sorbito de Verdad`,
+      text: `Hola ${name},\n\nRecibimos tu pedido y ya estamos trabajando en él.\n\nNúmero de orden: #${orderId.slice(-8).toUpperCase()}\nTotal: ${formattedTotal}\n\nVe tu pedido: ${orderUrl}\n\n– Sorbito de Verdad`,
       html: baseTemplate('Pedido confirmado', `Tu pedido en Sorbito de Verdad ha sido recibido. Total: ${formattedTotal}`, body),
     });
 
@@ -344,8 +354,10 @@ export class EmailService {
 
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
+      replyTo: REPLY_TO,
       to,
-      subject: '☕ Tu pedido está confirmado — Aquí tus datos de acceso',
+      subject: `Tu cuenta en Sorbito de Verdad — Datos de acceso, ${firstName}`,
+      text: `Hola ${firstName},\n\nCreamos una cuenta para que puedas rastrear tu pedido.\n\nEmail: ${to}\nContraseña temporal: ${tempPassword}\n\nAccede en: ${DEFAULT_FRONTEND_URL}/login\n\nTe recomendamos cambiar tu contraseña desde tu perfil.\n\n– Sorbito de Verdad\n${DEFAULT_FRONTEND_URL}`,
       html: baseTemplate('¡Bienvenido/a!', `${firstName}, tu cuenta fue creada. Aquí están tus credenciales.`, body),
     });
 
@@ -442,8 +454,10 @@ export class EmailService {
 
     const { data, error } = await resend.emails.send({
       from: FROM_EMAIL,
+      replyTo: REPLY_TO,
       to,
-      subject: `${icon} Tu pedido ${formattedOrder} está: ${label} — Sorbito de Verdad`,
+      subject: `Tu pedido ${formattedOrder} — ${label} | Sorbito de Verdad`,
+      text: `Hola ${name},\n\n${message}${adminNotes ? `\n\nNota del equipo: ${adminNotes}` : ''}\n\nVe los detalles: ${orderUrl}\n\n– Sorbito de Verdad`,
       html: baseTemplate(`Pedido ${label}`, `${name}, el estado de tu pedido cambió a: ${label}`, body),
     });
 

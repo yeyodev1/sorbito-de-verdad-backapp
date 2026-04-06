@@ -435,10 +435,12 @@ export const resendOrderEmail = async (req: AuthRequest, res: Response, next: Ne
       return;
     }
 
+    // Allow: admin/owner, authenticated order owner, or unauthenticated (orderId is proof)
     const isAdmin = req.user?.accountType === 'admin' || req.user?.accountType === 'owner';
-    const isOrderOwner = String(order.user) === req.user?.userId;
+    const isOrderOwner = req.user ? String(order.user) === req.user.userId : false;
+    const isGuest = !req.user;
 
-    if (!isAdmin && !isOrderOwner) {
+    if (!isAdmin && !isOrderOwner && !isGuest) {
       res.status(HttpStatusCode.Forbidden).send({ success: false, message: 'Sin permisos' });
       return;
     }
@@ -452,6 +454,33 @@ export const resendOrderEmail = async (req: AuthRequest, res: Response, next: Ne
     await emailService.sendOrderConfirmation(buyer.email, buyer.name, String(order._id), order.total);
 
     res.send({ success: true, message: `Correo reenviado a ${buyer.email}` });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const resendCredentials = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) {
+      res.status(HttpStatusCode.NotFound).send({ success: false, message: 'Orden no encontrada' });
+      return;
+    }
+
+    const buyer = await User.findById(order.user).select('name email');
+    if (!buyer) {
+      res.status(HttpStatusCode.NotFound).send({ success: false, message: 'Cliente no encontrado' });
+      return;
+    }
+
+    // Generate new temp password and update user
+    const newPassword = Math.random().toString(36).slice(-6) + Math.random().toString(36).slice(-4).toUpperCase() + '!';
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await User.findByIdAndUpdate(buyer._id, { password: hashed });
+
+    await emailService.sendGuestAccountCreated(buyer.email, buyer.name, newPassword);
+
+    res.send({ success: true, message: `Credenciales reenviadas a ${buyer.email}` });
   } catch (error) {
     next(error);
   }
