@@ -31,13 +31,15 @@ export const createOrder = async (req: AuthRequest, res: Response, next: NextFun
         res.status(HttpStatusCode.BadRequest).send({ success: false, message: `Stock insuficiente para: ${product.name}` });
         return;
       }
-      subtotal += product.price * item.quantity;
+      const itemPrice = item.price > 0 ? item.price : product.price;
+      subtotal += itemPrice * item.quantity;
       resolvedItems.push({
         product: product._id,
         name: product.name,
         image: product.mainImage,
         quantity: item.quantity,
-        price: product.price,
+        price: itemPrice,
+        ...(item.sizeName && { sizeName: item.sizeName }),
       });
       await Product.findByIdAndUpdate(product._id, { $inc: { stock: -item.quantity } });
     }
@@ -259,13 +261,15 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
         });
         return;
       }
-      subtotal += product.price * item.quantity;
+      const itemPrice = item.price > 0 ? item.price : product.price;
+      subtotal += itemPrice * item.quantity;
       resolvedItems.push({
         product: product._id,
         name: product.name,
         image: product.mainImage,
         quantity: item.quantity,
-        price: product.price,
+        price: itemPrice,
+        ...(item.sizeName && { sizeName: item.sizeName }),
       });
       await Product.findByIdAndUpdate(product._id, { $inc: { stock: -item.quantity } });
     }
