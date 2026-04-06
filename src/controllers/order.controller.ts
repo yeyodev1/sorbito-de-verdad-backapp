@@ -285,6 +285,7 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
 
     // ── Resolve user (logged-in or guest auto-account) ────────────────────────
     let userId: string;
+    let guestTempPassword: string | undefined;
     if (req.user?.userId) {
       userId = req.user.userId;
     } else {
@@ -303,7 +304,7 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
           password: hashed,
           accountType: 'customer',
         });
-        emailService.sendGuestAccountCreated(email, guestUser.name, tempPassword).catch(() => {});
+        guestTempPassword = tempPassword; // stored in order, emailed only after payment confirmed
       }
       userId = String(guestUser._id);
     }
@@ -322,6 +323,7 @@ export const createPayphoneOrder = async (req: AuthRequest, res: Response, next:
       notes,
       clientTransactionId,
       ...(shippingZoneName && { shippingZoneName }),
+      ...(guestTempPassword && { guestTempPassword }),
     });
 
     const frontendBase = process.env.FRONTEND_URL ?? 'http://localhost:5173';
@@ -397,10 +399,15 @@ export const confirmPayphonePayment = async (req: AuthRequest, res: Response, ne
     if (result.approved) {
       order.paymentStatus = 'paid';
       order.status = 'confirmed';
-      // Fire-and-forget confirmation email
       const buyer = await User.findById(order.user).select('name email');
       if (buyer) {
+        // Order confirmation email
         emailService.sendOrderConfirmation(buyer.email, buyer.name, String(order._id), order.total).catch(() => {});
+        // Guest account credentials — only sent now (on confirmed payment)
+        if (order.guestTempPassword) {
+          emailService.sendGuestAccountCreated(buyer.email, buyer.name, order.guestTempPassword).catch(() => {});
+          order.guestTempPassword = undefined; // clear after sending
+        }
       }
     } else {
       order.paymentStatus = 'failed';
