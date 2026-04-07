@@ -11,6 +11,7 @@ const DEV_WHITELIST = [
   "http://localhost:5174",
   "http://localhost:8101",
   "https://sorbitodeverdad.com",
+  "http://localhost:5175",
   "https://testing-storybrand-frontend.bakano.ec"
 ];
 

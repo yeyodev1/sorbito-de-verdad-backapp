@@ -111,10 +111,33 @@ export const getAllOrders = async (req: AuthRequest, res: Response, next: NextFu
       res.status(HttpStatusCode.Forbidden).send({ success: false, message: 'Sin permisos' });
       return;
     }
-    const orders = await Order.find()
-      .populate('user', 'name email')
-      .sort({ createdAt: -1 });
-    res.send({ success: true, data: orders });
+
+    const { status, dateFrom, dateTo, sort = '-createdAt', limit = '200' } = req.query as Record<string, string>;
+
+    const query: Record<string, unknown> = {};
+
+    if (status) query.status = status;
+
+    if (dateFrom || dateTo) {
+      const dateFilter: Record<string, Date> = {};
+      // Frontend sends UTC ISO strings with proper TZ offset already applied
+      if (dateFrom) dateFilter.$gte = new Date(dateFrom);
+      if (dateTo)   dateFilter.$lte = new Date(dateTo);
+      query.createdAt = dateFilter;
+    }
+
+    // Conteos reales por estado (siempre, sin importar el filtro activo)
+    const allStatuses = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled'];
+    const [countResults, orders] = await Promise.all([
+      Promise.all(allStatuses.map(s => Order.countDocuments({ status: s }))),
+      Order.find(query).populate('user', 'name email').sort(sort).limit(parseInt(limit)),
+    ]);
+
+    const counts: Record<string, number> = {};
+    allStatuses.forEach((s, i) => { counts[s] = countResults[i]; });
+    const total = countResults.reduce((a, b) => a + b, 0);
+
+    res.send({ success: true, data: orders, counts, total });
   } catch (error) {
     next(error);
   }
