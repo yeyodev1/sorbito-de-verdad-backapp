@@ -37,6 +37,7 @@ export interface IOrder extends Document {
   clientTransactionId?: string;
   shippingZoneName?: string;
   guestTempPassword?: string;
+  paymentReceiptUrl?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -86,6 +87,7 @@ const orderSchema = new Schema<IOrder>(
     clientTransactionId: { type: String },
     shippingZoneName: { type: String },
     guestTempPassword: { type: String },
+    paymentReceiptUrl: { type: String },
   },
   { timestamps: true }
 );

@@ -112,7 +112,7 @@ export const getAllOrders = async (req: AuthRequest, res: Response, next: NextFu
       return;
     }
 
-    const { status, dateFrom, dateTo, sort = '-createdAt', limit = '200' } = req.query as Record<string, string>;
+    const { status, dateFrom, dateTo, sort = '-createdAt', limit = '200', search } = req.query as Record<string, string>;
 
     const query: Record<string, unknown> = {};
 
@@ -124,6 +124,16 @@ export const getAllOrders = async (req: AuthRequest, res: Response, next: NextFu
       if (dateFrom) dateFilter.$gte = new Date(dateFrom);
       if (dateTo)   dateFilter.$lte = new Date(dateTo);
       query.createdAt = dateFilter;
+    }
+
+    if (search) {
+      const matchingUsers = await User.find({ name: { $regex: search, $options: 'i' } }).select('_id');
+      const userIds = matchingUsers.map(u => u._id);
+      (query as Record<string, unknown>).$or = [
+        { identificationNumber: { $regex: search, $options: 'i' } },
+        { 'shippingAddress.phone': { $regex: search, $options: 'i' } },
+        { user: { $in: userIds } },
+      ];
     }
 
     // Conteos reales por estado (siempre, sin importar el filtro activo)
@@ -149,7 +159,7 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response, next: N
       res.status(HttpStatusCode.Forbidden).send({ success: false, message: 'Sin permisos' });
       return;
     }
-    const { status, paymentStatus, adminNotes } = req.body;
+    const { status, paymentStatus, adminNotes, paymentReceiptUrl } = req.body;
 
     const order = await Order.findById(req.params.id).populate<{ user: { name: string; email: string } }>('user', 'name email');
     if (!order) {
@@ -162,6 +172,7 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response, next: N
     if (status) order.status = status;
     if (paymentStatus) order.paymentStatus = paymentStatus;
     if (adminNotes !== undefined) order.notes = adminNotes;
+    if (paymentReceiptUrl !== undefined) order.paymentReceiptUrl = paymentReceiptUrl || undefined;
     await order.save();
 
     // Send status-change email if status actually changed
