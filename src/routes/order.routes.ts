@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   createOrder,
+  createGuestOrder,
   getMyOrders,
   getOrderById,
   getAllOrders,
@@ -20,6 +21,7 @@ const orderRouter = Router();
 // ── Public routes (no auth required) ────────────────────────────────────────
 orderRouter.get('/track/by-email/:email', trackOrderByEmail);
 orderRouter.get('/track/:orderNumber', trackOrder);
+orderRouter.post('/guest', createGuestOrder);
 orderRouter.post('/payphone', optionalAuthMiddleware, createPayphoneOrder);
 orderRouter.post('/confirm-payment', optionalAuthMiddleware, confirmPayphonePayment);
 orderRouter.post('/:id/resend-email', optionalAuthMiddleware, resendOrderEmail);

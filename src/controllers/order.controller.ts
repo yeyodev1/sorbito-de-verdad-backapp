@@ -545,3 +545,100 @@ export const getPaymentStatus = async (req: AuthRequest, res: Response, next: Ne
     next(error);
   }
 };
+
+export const createGuestOrder = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const {
+      customerEmail,
+      items,
+      shippingAddress,
+      paymentMethod = 'transfer',
+      notes,
+      identificationNumber,
+      shippingZoneName,
+      shipping: bodyShipping,
+      source,
+    } = req.body;
+
+    if (!customerEmail) {
+      res.status(HttpStatusCode.BadRequest).send({ success: false, message: 'customerEmail es requerido' });
+      return;
+    }
+    if (!items || !items.length || !shippingAddress) {
+      res.status(HttpStatusCode.BadRequest).send({ success: false, message: 'Items y dirección de envío son requeridos' });
+      return;
+    }
+
+    let user = await User.findOne({ email: customerEmail.toLowerCase() });
+    let isNewGuest = false;
+    let tempPassword: string | undefined;
+
+    if (!user) {
+      isNewGuest = true;
+      tempPassword =
+        Math.random().toString(36).slice(-6) + Math.random().toString(36).slice(-4).toUpperCase() + '!';
+      user = await User.create({
+        name: shippingAddress.name || customerEmail.split('@')[0],
+        email: customerEmail.toLowerCase(),
+        password: tempPassword,
+        role: 'customer',
+      });
+    }
+
+    let subtotal = 0;
+    const resolvedItems = [];
+
+    for (const item of items) {
+      const product = await Product.findById(item.product);
+      if (!product || !product.isActive) {
+        res.status(HttpStatusCode.BadRequest).send({ success: false, message: `Producto no disponible: ${item.product}` });
+        return;
+      }
+      if (product.stock < item.quantity) {
+        res.status(HttpStatusCode.BadRequest).send({ success: false, message: `Stock insuficiente para: ${product.name}` });
+        return;
+      }
+      const itemPrice = item.price > 0 ? item.price : product.price;
+      subtotal += itemPrice * item.quantity;
+      resolvedItems.push({
+        product: product._id,
+        name: product.name,
+        image: product.mainImage,
+        quantity: item.quantity,
+        price: itemPrice,
+        ...(item.sizeName && { sizeName: item.sizeName }),
+      });
+      await Product.findByIdAndUpdate(product._id, { $inc: { stock: -item.quantity } });
+    }
+
+    const shipping = bodyShipping !== undefined ? bodyShipping : subtotal >= 50 ? 0 : 5;
+    const total = subtotal + shipping;
+
+    const order = await Order.create({
+      user: user._id,
+      items: resolvedItems,
+      subtotal,
+      shipping,
+      tax: 0,
+      total,
+      shippingAddress,
+      paymentMethod,
+      notes,
+      ...(identificationNumber && { identificationNumber }),
+      ...(shippingZoneName && { shippingZoneName }),
+      ...(source && { source }),
+      ...(isNewGuest && tempPassword && { guestTempPassword: tempPassword }),
+    });
+
+    emailService.sendOrderConfirmation(user.email, user.name, String(order._id), total).catch(() => {});
+
+    if (isNewGuest && tempPassword) {
+      emailService.sendGuestAccountCreated(user.email, user.name, tempPassword).catch(() => {});
+      await Order.findByIdAndUpdate(order._id, { $unset: { guestTempPassword: 1 } });
+    }
+
+    res.status(HttpStatusCode.Created).send({ success: true, data: order });
+  } catch (error) {
+    next(error);
+  }
+};
