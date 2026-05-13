@@ -11,5 +11,11 @@
       "source": "/(.*)",
       "destination": "src/index.ts"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/payment-reminders",
+      "schedule": "*/5 * * * *"
+    }
   ]
 }

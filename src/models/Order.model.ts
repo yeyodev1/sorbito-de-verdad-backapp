@@ -39,6 +39,14 @@ export interface IOrder extends Document {
   guestTempPassword?: string;
   paymentReceiptUrl?: string;
   source?: string;
+  payphoneLinkUrl?: string;
+  payphoneLinkExpiresAt?: Date;
+  remindersSent?: {
+    r15min?: Date;
+    r1h?: Date;
+    r24h?: Date;
+  };
+  whatsappPhone?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -90,6 +98,14 @@ const orderSchema = new Schema<IOrder>(
     guestTempPassword: { type: String },
     paymentReceiptUrl: { type: String },
     source: { type: String },
+    payphoneLinkUrl: { type: String },
+    payphoneLinkExpiresAt: { type: Date },
+    remindersSent: {
+      r15min: { type: Date },
+      r1h: { type: Date },
+      r24h: { type: Date },
+    },
+    whatsappPhone: { type: String },
   },
   { timestamps: true }
 );

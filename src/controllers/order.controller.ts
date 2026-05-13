@@ -8,6 +8,8 @@ import { ShippingZone } from '../models/ShippingZone.model';
 import { AuthRequest } from '../types/AuthRequest';
 import { emailService } from '../services/email.service';
 import { payphoneService } from '../services/payphone.service';
+import { payphoneLinksService } from '../services/payphone-links.service';
+import { bbcNotificationService } from '../services/bbc-notification.service';
 
 export const createOrder = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
@@ -112,11 +114,12 @@ export const getAllOrders = async (req: AuthRequest, res: Response, next: NextFu
       return;
     }
 
-    const { status, dateFrom, dateTo, sort = '-createdAt', limit = '200', search } = req.query as Record<string, string>;
+    const { status, dateFrom, dateTo, sort = '-createdAt', limit = '200', search, source } = req.query as Record<string, string>;
 
     const query: Record<string, unknown> = {};
 
     if (status) query.status = status;
+    if (source) query.source = source;
 
     if (dateFrom || dateTo) {
       const dateFilter: Record<string, Date> = {};
@@ -627,6 +630,7 @@ export const createGuestOrder = async (req: Request, res: Response, next: NextFu
       ...(identificationNumber && { identificationNumber }),
       ...(shippingZoneName && { shippingZoneName }),
       ...(source && { source }),
+      ...(source === 'whatsapp_bot' && shippingAddress?.phone && { whatsappPhone: shippingAddress.phone }),
       ...(isNewGuest && tempPassword && { guestTempPassword: tempPassword }),
     });
 
@@ -640,5 +644,316 @@ export const createGuestOrder = async (req: Request, res: Response, next: NextFu
     res.status(HttpStatusCode.Created).send({ success: true, data: order });
   } catch (error) {
     next(error);
+  }
+};
+
+// ── Payphone Link de Pago ─────────────────────────────────────────────────
+function buildClientTransactionId(orderNumber: string): string {
+  // <=15 chars, base36 timestamp + short order suffix
+  const ts = Date.now().toString(36).toUpperCase();
+  const tail = orderNumber.replace(/[^0-9A-Z]/gi, '').slice(-4);
+  return ('SDV' + ts + tail).slice(0, 15);
+}
+
+export const createPayphoneLink = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) {
+      res.status(HttpStatusCode.NotFound).send({ success: false, message: 'Orden no encontrada' });
+      return;
+    }
+    if (order.paymentStatus === 'paid') {
+      res.status(HttpStatusCode.BadRequest).send({ success: false, message: 'Orden ya pagada' });
+      return;
+    }
+
+    const amountCents = Math.round(order.total * 100);
+    const taxCents = Math.round((order.tax || 0) * 100);
+    const amountWithoutTaxCents = amountCents - taxCents;
+
+    const clientTransactionId = order.clientTransactionId || buildClientTransactionId(order.orderNumber);
+
+    const { paymentLink, expiresAt } = await payphoneLinksService.createPaymentLink({
+      amountCents,
+      taxCents,
+      amountWithoutTaxCents,
+      reference: `Orden ${order.orderNumber}`,
+      clientTransactionId,
+      expireInHours: 24,
+    });
+
+    order.payphoneLinkUrl = paymentLink;
+    order.payphoneLinkExpiresAt = expiresAt;
+    order.clientTransactionId = clientTransactionId;
+    order.paymentMethod = 'payphone';
+    await order.save();
+
+    res.send({
+      success: true,
+      data: {
+        paymentLink,
+        expiresAt,
+        orderNumber: order.orderNumber,
+        total: order.total,
+        clientTransactionId,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const payphoneLinkWebhook = async (req: Request, res: Response, next: NextFunction) => {
+  // ALWAYS return 200 — Payphone retries on non-2xx
+  try {
+    const body = req.body || {};
+    const query = req.query || {};
+
+    // Payphone Notificación Externa shape (best-effort lookup across known field names)
+    const transactionId =
+      body.transactionId || body.id || body.payphoneTransactionId || query.id || query.transactionId;
+    const clientTransactionId =
+      body.clientTransactionId || body.clientTxId || query.clientTransactionId || query.clientTransactionID;
+    const statusCodeRaw =
+      body.statusCode ?? body.status ?? body.transactionStatus ?? query.statusCode;
+
+    console.log('[PayphoneLinkWebhook] body:', JSON.stringify(body), 'query:', JSON.stringify(query));
+
+    if (!clientTransactionId) {
+      res.status(HttpStatusCode.Ok).send({ success: false, message: 'missing clientTransactionId' });
+      return;
+    }
+
+    const order = await Order.findOne({ clientTransactionId: String(clientTransactionId) });
+    if (!order) {
+      res.status(HttpStatusCode.Ok).send({ success: false, message: 'order not found' });
+      return;
+    }
+
+    const numericStatus = typeof statusCodeRaw === 'number' ? statusCodeRaw : parseInt(String(statusCodeRaw), 10);
+    const stringStatus = typeof statusCodeRaw === 'string' ? statusCodeRaw.toLowerCase() : '';
+    const isApproved =
+      numericStatus === 3 ||
+      stringStatus === 'approved' ||
+      stringStatus === 'paid' ||
+      stringStatus === 'success';
+    const isFailed =
+      numericStatus === 2 ||
+      stringStatus === 'cancelled' ||
+      stringStatus === 'failed' ||
+      stringStatus === 'rejected';
+
+    if (isApproved) {
+      order.paymentStatus = 'paid';
+      order.status = 'confirmed';
+      if (transactionId) order.payphoneTransactionId = String(transactionId);
+      await order.save();
+
+      // Outbound WhatsApp confirmation
+      if (order.source === 'whatsapp_bot') {
+        bbcNotificationService.sendPaidConfirmation(order).catch(err =>
+          console.error('[PayphoneLinkWebhook] sendPaidConfirmation error:', err)
+        );
+      }
+
+      // Email confirmation (best-effort)
+      try {
+        const user = await User.findById(order.user);
+        if (user?.email) {
+          emailService.sendOrderConfirmation(user.email, user.name, String(order._id), order.total).catch(() => {});
+        }
+      } catch {}
+    } else if (isFailed) {
+      order.paymentStatus = 'failed';
+      if (transactionId) order.payphoneTransactionId = String(transactionId);
+      await order.save();
+    }
+
+    res.status(HttpStatusCode.Ok).send({ success: true });
+  } catch (error) {
+    console.error('[PayphoneLinkWebhook] error:', error);
+    res.status(HttpStatusCode.Ok).send({ success: false });
+  }
+};
+
+// Parse pipe-format raw message from WhatsApp bot:
+// "PAGAR|nombre|email|telefono|cedula|direccion|ciudad|productos|precioTotal"
+function parseRawMessage(raw: string): Record<string, any> | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const cleaned = raw.replace(/^[^P]*PAGAR\s*\|/i, 'PAGAR|').trim();
+  const parts = cleaned.split('|').map(p => p.trim());
+  if (parts.length < 9 || !/^PAGAR$/i.test(parts[0])) return null;
+  const total = parseFloat(parts[8].replace(/[^0-9.]/g, ''));
+  if (!total || total <= 0) return null;
+  return {
+    customerName: parts[1],
+    customerEmail: parts[2],
+    phone: parts[3].replace(/[^0-9+]/g, ''),
+    identificationNumber: parts[4],
+    address: parts[5],
+    city: parts[6],
+    items: [{ name: parts[7], price: total, quantity: 1 }],
+  };
+}
+
+// ── WhatsApp Bot one-shot checkout: create order + payphone link ──────────
+const FORMAT_HELP =
+  '❌ Formato incorrecto. Por favor copia y pega exactamente este formato en UN solo mensaje (cambia los valores por los tuyos):\n\n' +
+  'PAGAR|NombreCompleto|email@dominio.com|0987654321|1701234567|CalleYNumero Referencia|Ciudad|2 Taza Boscan Estandar|50';
+
+export const whatsappBotCheckout = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rawBody = req.body || {};
+    const isFromBot = !!rawBody.rawMessage;
+    const parsed = rawBody.rawMessage ? parseRawMessage(rawBody.rawMessage) : null;
+
+    if (isFromBot && !parsed) {
+      res.status(HttpStatusCode.Ok).send({ success: false, message: FORMAT_HELP });
+      return;
+    }
+
+    const body: any = parsed ? { ...rawBody, ...parsed } : rawBody;
+    if (parsed && rawBody.phone) {
+      body.phone = parsed.phone || String(rawBody.phone).replace(/[^0-9+]/g, '');
+    }
+    const {
+      customerEmail,
+      customerName,
+      phone,
+      items,
+      address,
+      city,
+      state,
+      notes,
+      identificationNumber,
+      shippingZoneName,
+      shipping: bodyShipping,
+    } = body;
+
+    const missing: string[] = [];
+    if (!customerEmail) missing.push('correo');
+    if (!phone) missing.push('teléfono');
+    if (!items || !Array.isArray(items) || !items.length) missing.push('productos');
+    if (!address) missing.push('dirección');
+    if (missing.length) {
+      const msg = isFromBot
+        ? `❌ Faltan datos (${missing.join(', ')}). ${FORMAT_HELP}`
+        : `Faltan datos: ${missing.join(', ')}`;
+      res.status(isFromBot ? HttpStatusCode.Ok : HttpStatusCode.BadRequest).send({ success: false, message: msg });
+      return;
+    }
+
+    let user = await User.findOne({ email: String(customerEmail).toLowerCase() });
+    let isNewGuest = false;
+    let tempPassword: string | undefined;
+    if (!user) {
+      isNewGuest = true;
+      tempPassword =
+        Math.random().toString(36).slice(-6) + Math.random().toString(36).slice(-4).toUpperCase() + '!';
+      user = await User.create({
+        name: customerName || String(customerEmail).split('@')[0],
+        email: String(customerEmail).toLowerCase(),
+        password: tempPassword,
+        role: 'customer',
+      });
+    }
+
+    let subtotal = 0;
+    const resolvedItems: any[] = [];
+    for (const item of items) {
+      const qty = Number(item.quantity) || 1;
+      if (item.product) {
+        const product = await Product.findById(item.product);
+        if (!product || !product.isActive) {
+          res.status(HttpStatusCode.BadRequest).send({ success: false, message: `Producto no disponible: ${item.product}` });
+          return;
+        }
+        const price = Number(item.price) > 0 ? Number(item.price) : product.price;
+        subtotal += price * qty;
+        resolvedItems.push({
+          product: product._id,
+          name: product.name,
+          image: product.mainImage,
+          quantity: qty,
+          price,
+          ...(item.sizeName && { sizeName: item.sizeName }),
+        });
+      } else {
+        const name = String(item.name || 'Producto');
+        const price = Number(item.price) || 0;
+        if (price <= 0) {
+          res.status(HttpStatusCode.BadRequest).send({ success: false, message: `Precio inválido para item: ${name}` });
+          return;
+        }
+        subtotal += price * qty;
+        resolvedItems.push({ name, image: '', quantity: qty, price });
+      }
+    }
+
+    const shippingCost = bodyShipping !== undefined ? Number(bodyShipping) : subtotal >= 50 ? 0 : 5;
+    const total = subtotal + shippingCost;
+
+    const order = await Order.create({
+      user: user._id,
+      items: resolvedItems,
+      subtotal,
+      shipping: shippingCost,
+      tax: 0,
+      total,
+      shippingAddress: {
+        name: customerName || user.name,
+        phone,
+        street: address,
+        city: city || '',
+        ...(state && { state }),
+      },
+      paymentMethod: 'payphone',
+      ...(notes && { notes }),
+      ...(identificationNumber && { identificationNumber }),
+      ...(shippingZoneName && { shippingZoneName }),
+      source: 'whatsapp_bot',
+      whatsappPhone: phone,
+      ...(isNewGuest && tempPassword && { guestTempPassword: tempPassword }),
+    });
+
+    const clientTransactionId = buildClientTransactionId(order.orderNumber);
+    const amountCents = Math.round(total * 100);
+    const taxCents = 0;
+    const amountWithoutTaxCents = amountCents;
+
+    const { paymentLink, expiresAt } = await payphoneLinksService.createPaymentLink({
+      amountCents,
+      taxCents,
+      amountWithoutTaxCents,
+      reference: `Orden ${order.orderNumber}`,
+      clientTransactionId,
+      expireInHours: 24,
+    });
+
+    order.payphoneLinkUrl = paymentLink;
+    order.payphoneLinkExpiresAt = expiresAt;
+    order.clientTransactionId = clientTransactionId;
+    await order.save();
+
+    const message =
+      `✅ Pedido ${order.orderNumber} creado por $${total.toFixed(2)}\n\n` +
+      `Paga aquí 👇\n${paymentLink}\n\n` +
+      `Link válido 24h. Cuando confirmes el pago te aviso por aquí ☕`;
+
+    res.status(HttpStatusCode.Created).send({
+      success: true,
+      message,
+      paymentLink,
+      orderNumber: order.orderNumber,
+      orderId: String(order._id),
+      total,
+      expiresAt,
+    });
+  } catch (error) {
+    console.error('[whatsappBotCheckout] error:', error);
+    res.status(HttpStatusCode.Ok).send({
+      success: false,
+      message: '❌ Hubo un problema procesando tu pedido. Por favor intenta de nuevo en un momento o escribe AYUDA.',
+    });
   }
 };
