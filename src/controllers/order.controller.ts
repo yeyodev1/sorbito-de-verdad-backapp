@@ -949,11 +949,13 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       total,
       expiresAt,
     });
-  } catch (error) {
-    console.error('[whatsappBotCheckout] error:', error);
+  } catch (error: any) {
+    console.error('[whatsappBotCheckout] error:', error?.stack || error?.message || error);
+    const detail = error?.response?.data ? JSON.stringify(error.response.data).slice(0, 200) : (error?.message || 'unknown');
     res.status(HttpStatusCode.Ok).send({
       success: false,
-      message: '❌ Hubo un problema procesando tu pedido. Por favor intenta de nuevo en un momento o escribe AYUDA.',
+      message: `❌ Hubo un problema procesando tu pedido. Detalle técnico: ${detail.slice(0, 200)}. Por favor intenta de nuevo o escribe AYUDA.`,
+      _debug: detail,
     });
   }
 };
