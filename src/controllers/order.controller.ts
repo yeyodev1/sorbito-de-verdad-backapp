@@ -781,8 +781,8 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
 // or "confirmo compra|nombre|email|telefono|cedula|direccion|ciudad|productos|precioTotal"
 function parseRawMessage(raw: string): Record<string, any> | null {
   if (!raw || typeof raw !== 'string') return null;
-  // Normalize: find trigger (PAGAR | "confirmo compra" | "confirmo mi compra") and slice from there
-  const re = /\b(PAGAR|confirmo\s+mi\s+compra|confirmo\s+compra)\b\s*\|/i;
+  // Normalize: find trigger and slice from there
+  const re = /\b(PAGAR|confirmar\s+pedido|confirmo\s+mi\s+compra|confirmo\s+compra)\b\s*\|/i;
   const match = raw.match(re);
   if (!match) return null;
   const idx = raw.indexOf(match[0]);
@@ -793,6 +793,9 @@ function parseRawMessage(raw: string): Record<string, any> | null {
   if (parts.length < 9) return null;
   const total = parseFloat(parts[8].replace(/[^0-9.]/g, ''));
   if (!total || total <= 0) return null;
+  // Optional 10th field: shipping cost
+  const shipping = parts.length > 9 ? parseFloat(parts[9].replace(/[^0-9.]/g, '')) || 0 : 0;
+  const productsPrice = Math.max(0, total - shipping);
   return {
     customerName: parts[1],
     customerEmail: parts[2],
@@ -800,14 +803,15 @@ function parseRawMessage(raw: string): Record<string, any> | null {
     identificationNumber: parts[4],
     address: parts[5],
     city: parts[6],
-    items: [{ name: parts[7], price: total, quantity: 1 }],
+    items: [{ name: parts[7], price: productsPrice, quantity: 1 }],
+    shipping,
   };
 }
 
 // ── WhatsApp Bot one-shot checkout: create order + payphone link ──────────
 const FORMAT_HELP =
   '❌ Formato incorrecto. Por favor copia y pega exactamente este formato en UN solo mensaje (cambia los valores por los tuyos):\n\n' +
-  'confirmo mi compra|NombreCompleto|email@dominio.com|0987654321|1701234567|CalleYNumero Referencia|Ciudad|2 Taza Boscan Estandar|50';
+  'confirmar pedido|NombreCompleto|email@dominio.com|0987654321|1701234567|CalleYNumero Referencia|Ciudad|2 Taza Boscan Estandar|50';
 
 export const whatsappBotCheckout = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -917,8 +921,8 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       });
     }
 
-    // WhatsApp bot: envío SIEMPRE gratis (AI promete así)
-    const shippingCost = 0;
+    // WhatsApp bot: AI envía shipping ya calculado según zona (Ecuador=$0, USA/Canada=$48, Europa=$58, etc.)
+    const shippingCost = bodyShipping !== undefined ? Number(bodyShipping) : 0;
     const total = subtotal + shippingCost;
 
     const order = await Order.create({
