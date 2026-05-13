@@ -781,8 +781,8 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
 // or "confirmo compra|nombre|email|telefono|cedula|direccion|ciudad|productos|precioTotal"
 function parseRawMessage(raw: string): Record<string, any> | null {
   if (!raw || typeof raw !== 'string') return null;
-  // Normalize: find trigger (PAGAR or "confirmo compra") and slice from there
-  const re = /\b(PAGAR|confirmo\s+compra)\b\s*\|/i;
+  // Normalize: find trigger (PAGAR | "confirmo compra" | "confirmo mi compra") and slice from there
+  const re = /\b(PAGAR|confirmo\s+mi\s+compra|confirmo\s+compra)\b\s*\|/i;
   const match = raw.match(re);
   if (!match) return null;
   const idx = raw.indexOf(match[0]);
@@ -807,7 +807,7 @@ function parseRawMessage(raw: string): Record<string, any> | null {
 // ── WhatsApp Bot one-shot checkout: create order + payphone link ──────────
 const FORMAT_HELP =
   '❌ Formato incorrecto. Por favor copia y pega exactamente este formato en UN solo mensaje (cambia los valores por los tuyos):\n\n' +
-  'confirmo compra|NombreCompleto|email@dominio.com|0987654321|1701234567|CalleYNumero Referencia|Ciudad|2 Taza Boscan Estandar|50';
+  'confirmo mi compra|NombreCompleto|email@dominio.com|0987654321|1701234567|CalleYNumero Referencia|Ciudad|2 Taza Boscan Estandar|50';
 
 export const whatsappBotCheckout = async (req: Request, res: Response, next: NextFunction) => {
   try {
