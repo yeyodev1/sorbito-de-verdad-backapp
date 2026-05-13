@@ -5,6 +5,7 @@ import { Order } from '../models/Order.model';
 import { Product } from '../models/Product.model';
 import { User } from '../models/User.model';
 import { ShippingZone } from '../models/ShippingZone.model';
+import { TempCart } from '../models/TempCart.model';
 import { AuthRequest } from '../types/AuthRequest';
 import { emailService } from '../services/email.service';
 import { payphoneService } from '../services/payphone.service';
@@ -808,6 +809,134 @@ function parseRawMessage(raw: string): Record<string, any> | null {
   };
 }
 
+// ── Heuristic extraction from cliente WhatsApp message ───────────────────
+const SHIPPING_RULES: Array<{ countries: string[]; price: number; cities?: string[] }> = [
+  { countries: ['ecuador'], price: 0, cities: ['quito','guayaquil','cuenca','manta','loja','ambato','machala','portoviejo','santo domingo','riobamba','ibarra','esmeraldas','la garzota'] },
+  { countries: ['estados unidos','usa','eeuu','united states','us','canada','canadá'], price: 48 },
+  { countries: ['españa','spain','francia','france','alemania','germany','italia','italy','portugal','países bajos','paises bajos','holanda','netherlands','bélgica','belgica','belgium','suiza','switzerland','austria','suecia','sweden','noruega','norway','dinamarca','denmark','finlandia','finland','polonia','poland','grecia','greece','reino unido','uk','united kingdom','europa'], price: 58 },
+];
+
+const PRODUCT_KEYWORDS = [
+  { match: /boscán|boscan/i, name: 'Taza Boscán' },
+  { match: /moni/i, name: 'Taza La Moni' },
+  { match: /logo\s*color/i, name: 'Taza Logo Color' },
+  { match: /logo\s*invisible/i, name: 'Taza Logo Invisible' },
+  { match: /colecci[oó]n\s*completa|completa|los?\s*4|los?\s*cuatro/i, name: 'Colección Completa', price: 80 },
+];
+
+function extractFromMessage(message: string): Partial<ITempCartData> {
+  const m = (message || '').trim();
+  const lower = m.toLowerCase();
+  const out: Partial<ITempCartData> = {};
+
+  // Email
+  const email = m.match(/[\w.+-]+@[\w-]+\.[\w.-]+/i);
+  if (email) out.customerEmail = email[0].toLowerCase();
+
+  // Cédula 10 dig or RUC 13 dig (not preceded by + and not too long)
+  const idMatch = m.match(/\b\d{10}(\d{3})?\b/g);
+  if (idMatch) out.identificationNumber = idMatch[0];
+
+  // Phone 10 dig starting with 0 or 9, or +593
+  const phoneMatch = m.match(/(?:\+?593|0)\d{9}/);
+  if (phoneMatch) out.phone = phoneMatch[0];
+
+  // City + country detection
+  for (const rule of SHIPPING_RULES) {
+    for (const c of rule.countries) {
+      if (lower.includes(c)) {
+        out.country = c;
+        out.shippingCost = rule.price;
+        break;
+      }
+    }
+    if (rule.cities) {
+      for (const city of rule.cities) {
+        if (lower.includes(city)) {
+          out.city = city.replace(/\b\w/g, l => l.toUpperCase());
+          out.country = out.country || 'ecuador';
+          out.shippingCost = out.shippingCost ?? rule.price;
+          break;
+        }
+      }
+    }
+  }
+
+  // Products + count
+  const products: string[] = [];
+  let subtotal = 0;
+  let count = 0;
+  for (const pk of PRODUCT_KEYWORDS) {
+    if (pk.match.test(m)) {
+      // qty: number near keyword (e.g., "2 boscan")
+      const qtyRe = new RegExp(`(\\d{1,3})\\s*(?:tazas?\\s+)?(?:de\\s+)?${pk.match.source}`, 'i');
+      const qm = m.match(qtyRe);
+      const qty = qm ? parseInt(qm[1]) : 1;
+      const price = pk.price ?? 25;
+      products.push(`${qty} ${pk.name}`);
+      subtotal += qty * price;
+      count += qty;
+    }
+  }
+  if (products.length) {
+    out.productDescription = products.join(' + ');
+    out.productsCount = count;
+    out.productSubtotal = subtotal;
+  }
+
+  // Address: long-ish line that mentions calle/mz/villa/avenida/cdla
+  const addressRe = /([a-záéíóúñ0-9 .,#-]*(calle|mz|manzana|villa|vll|avenida|av\.?|cdla|ciudadela|residencial)[a-záéíóúñ0-9 .,#-]+)/i;
+  const am = m.match(addressRe);
+  if (am) out.address = am[1].trim();
+
+  // Name: if message contains "soy" or starts with capitalized words
+  const nameMatch = m.match(/(?:soy|me llamo|mi nombre es)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ ]{3,40})/i);
+  if (nameMatch) out.customerName = nameMatch[1].trim();
+
+  return out;
+}
+
+interface ITempCartData {
+  customerName?: string;
+  customerEmail?: string;
+  phone?: string;
+  identificationNumber?: string;
+  address?: string;
+  city?: string;
+  country?: string;
+  productDescription?: string;
+  productsCount?: number;
+  productSubtotal?: number;
+  shippingCost?: number;
+  total?: number;
+}
+
+export const whatsappBotCartUpdate = async (req: Request, res: Response) => {
+  try {
+    const phone = String(req.body?.phone || '').replace(/[^0-9+]/g, '');
+    const message = String(req.body?.message || '');
+    if (!phone) {
+      res.status(HttpStatusCode.Ok).send({ success: false });
+      return;
+    }
+    const extracted = extractFromMessage(message);
+    const existing = await TempCart.findOne({ phone });
+    const merged: any = { ...(existing?.data || {}), ...extracted };
+    if (merged.productSubtotal !== undefined) {
+      merged.total = (merged.productSubtotal || 0) + (merged.shippingCost || 0);
+    }
+    await TempCart.findOneAndUpdate(
+      { phone },
+      { $set: { phone, data: merged } },
+      { upsert: true, new: true }
+    );
+    res.status(HttpStatusCode.Ok).send({ success: true });
+  } catch (error: any) {
+    console.error('[cartUpdate] error:', error?.message || error);
+    res.status(HttpStatusCode.Ok).send({ success: false });
+  }
+};
+
 // ── WhatsApp Bot one-shot checkout: create order + payphone link ──────────
 const FORMAT_HELP =
   '❌ Formato incorrecto. Por favor copia y pega exactamente este formato en UN solo mensaje (cambia los valores por los tuyos):\n\n' +
@@ -817,7 +946,51 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
   try {
     const rawBody = req.body || {};
     const isFromBot = !!rawBody.rawMessage;
-    const parsed = rawBody.rawMessage ? parseRawMessage(rawBody.rawMessage) : null;
+    let parsed = rawBody.rawMessage ? parseRawMessage(rawBody.rawMessage) : null;
+
+    // If trigger phrase present but no pipe data, fallback to TempCart cache
+    if (isFromBot && !parsed) {
+      const triggerRe = /\b(confirmar\s+mi\s+pedido|confirmar\s+pedido|confirmo\s+mi\s+compra|confirmo\s+compra)\b/i;
+      if (triggerRe.test(String(rawBody.rawMessage))) {
+        const phone = String(rawBody.phone || '').replace(/[^0-9+]/g, '');
+        if (phone) {
+          const cart = await TempCart.findOne({ phone });
+          if (cart && cart.data) {
+            const d = cart.data as any;
+            // Also extract from current message in case more data present
+            const extra = extractFromMessage(String(rawBody.rawMessage));
+            const merged = { ...d, ...extra };
+            if (merged.productSubtotal !== undefined) {
+              merged.total = (merged.productSubtotal || 0) + (merged.shippingCost || 0);
+            }
+            const missing: string[] = [];
+            if (!merged.customerName) missing.push('nombre');
+            if (!merged.customerEmail) missing.push('correo');
+            if (!merged.identificationNumber) missing.push('cédula');
+            if (!merged.address) missing.push('dirección');
+            if (!merged.city) missing.push('ciudad');
+            if (!merged.productDescription) missing.push('productos');
+            if (missing.length) {
+              res.status(HttpStatusCode.Ok).send({
+                success: false,
+                message: `❌ Aún me faltan estos datos para generar tu link: ${missing.join(', ')}. Por favor pásamelos y vuelvo a confirmar.`,
+              });
+              return;
+            }
+            parsed = {
+              customerName: merged.customerName,
+              customerEmail: merged.customerEmail,
+              phone: merged.phone || phone,
+              identificationNumber: merged.identificationNumber,
+              address: merged.address,
+              city: merged.city,
+              items: [{ name: merged.productDescription, price: merged.productSubtotal, quantity: 1 }],
+              shipping: merged.shippingCost || 0,
+            };
+          }
+        }
+      }
+    }
 
     if (isFromBot && !parsed) {
       res.status(HttpStatusCode.Ok).send({ success: false, message: FORMAT_HELP });
@@ -967,6 +1140,11 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
     order.payphoneLinkExpiresAt = expiresAt;
     order.clientTransactionId = clientTransactionId;
     await order.save();
+
+    // Clean TempCart for this phone after successful order
+    if (phone) {
+      TempCart.deleteOne({ phone }).catch(() => {});
+    }
 
     const message =
       `✅ Pedido ${order.orderNumber} creado por $${total.toFixed(2)}\n\n` +
