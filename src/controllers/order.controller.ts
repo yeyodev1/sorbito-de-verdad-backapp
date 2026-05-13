@@ -858,36 +858,55 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       });
     }
 
+    const activeProducts = await Product.find({ isActive: true });
+    const fallbackProduct = activeProducts[0];
+    if (!fallbackProduct) {
+      res.status(HttpStatusCode.Ok).send({ success: false, message: '❌ No hay productos activos en catálogo.' });
+      return;
+    }
+
+    function findProductByName(rawName: string) {
+      const n = rawName.toLowerCase();
+      const tokens = ['boscan', 'boscán', 'moni', 'logo color', 'logo invisible', 'logo', 'coleccion', 'colección', 'completa'];
+      const matched = tokens.find(t => n.includes(t));
+      if (!matched) return fallbackProduct;
+      const found = activeProducts.find(p => {
+        const pn = (p.name || '').toLowerCase();
+        if (matched.includes('boscan') || matched.includes('boscán')) return pn.includes('boscán') || pn.includes('boscan');
+        if (matched === 'moni') return pn.includes('moni');
+        if (matched === 'logo color') return pn.includes('logo color');
+        if (matched === 'logo invisible') return pn.includes('logo invisible');
+        if (matched.includes('coleccion') || matched.includes('colección') || matched === 'completa') return pn.includes('colección') || pn.includes('coleccion');
+        if (matched === 'logo') return pn.includes('logo');
+        return false;
+      });
+      return found || fallbackProduct;
+    }
+
     let subtotal = 0;
     const resolvedItems: any[] = [];
     for (const item of items) {
       const qty = Number(item.quantity) || 1;
+      let product: any = null;
       if (item.product) {
-        const product = await Product.findById(item.product);
+        product = await Product.findById(item.product);
         if (!product || !product.isActive) {
           res.status(HttpStatusCode.BadRequest).send({ success: false, message: `Producto no disponible: ${item.product}` });
           return;
         }
-        const price = Number(item.price) > 0 ? Number(item.price) : product.price;
-        subtotal += price * qty;
-        resolvedItems.push({
-          product: product._id,
-          name: product.name,
-          image: product.mainImage,
-          quantity: qty,
-          price,
-          ...(item.sizeName && { sizeName: item.sizeName }),
-        });
       } else {
-        const name = String(item.name || 'Producto');
-        const price = Number(item.price) || 0;
-        if (price <= 0) {
-          res.status(HttpStatusCode.BadRequest).send({ success: false, message: `Precio inválido para item: ${name}` });
-          return;
-        }
-        subtotal += price * qty;
-        resolvedItems.push({ name, image: '', quantity: qty, price });
+        product = findProductByName(String(item.name || ''));
       }
+      const price = Number(item.price) > 0 ? Number(item.price) : product.price;
+      subtotal += price * qty;
+      resolvedItems.push({
+        product: product._id,
+        name: item.name || product.name,
+        image: product.mainImage || '',
+        quantity: qty,
+        price,
+        ...(item.sizeName && { sizeName: item.sizeName }),
+      });
     }
 
     const shippingCost = bodyShipping !== undefined ? Number(bodyShipping) : subtotal >= 50 ? 0 : 5;
@@ -904,7 +923,8 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
         name: customerName || user.name,
         phone,
         street: address,
-        city: city || '',
+        city: city || 'Ecuador',
+        country: 'Ecuador',
         ...(state && { state }),
       },
       paymentMethod: 'payphone',
