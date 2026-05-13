@@ -778,11 +778,19 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
 
 // Parse pipe-format raw message from WhatsApp bot:
 // "PAGAR|nombre|email|telefono|cedula|direccion|ciudad|productos|precioTotal"
+// or "confirmo compra|nombre|email|telefono|cedula|direccion|ciudad|productos|precioTotal"
 function parseRawMessage(raw: string): Record<string, any> | null {
   if (!raw || typeof raw !== 'string') return null;
-  const cleaned = raw.replace(/^[^P]*PAGAR\s*\|/i, 'PAGAR|').trim();
-  const parts = cleaned.split('|').map(p => p.trim());
-  if (parts.length < 9 || !/^PAGAR$/i.test(parts[0])) return null;
+  // Normalize: find trigger (PAGAR or "confirmo compra") and slice from there
+  const re = /\b(PAGAR|confirmo\s+compra)\b\s*\|/i;
+  const match = raw.match(re);
+  if (!match) return null;
+  const idx = raw.indexOf(match[0]);
+  const cleaned = raw.slice(idx).trim();
+  // Replace trigger with normalized form for split
+  const normalized = cleaned.replace(re, 'TRIGGER|');
+  const parts = normalized.split('|').map(p => p.trim());
+  if (parts.length < 9) return null;
   const total = parseFloat(parts[8].replace(/[^0-9.]/g, ''));
   if (!total || total <= 0) return null;
   return {
@@ -799,7 +807,7 @@ function parseRawMessage(raw: string): Record<string, any> | null {
 // ── WhatsApp Bot one-shot checkout: create order + payphone link ──────────
 const FORMAT_HELP =
   '❌ Formato incorrecto. Por favor copia y pega exactamente este formato en UN solo mensaje (cambia los valores por los tuyos):\n\n' +
-  'PAGAR|NombreCompleto|email@dominio.com|0987654321|1701234567|CalleYNumero Referencia|Ciudad|2 Taza Boscan Estandar|50';
+  'confirmo compra|NombreCompleto|email@dominio.com|0987654321|1701234567|CalleYNumero Referencia|Ciudad|2 Taza Boscan Estandar|50';
 
 export const whatsappBotCheckout = async (req: Request, res: Response, next: NextFunction) => {
   try {
