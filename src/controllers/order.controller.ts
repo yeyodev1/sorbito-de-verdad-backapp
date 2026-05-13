@@ -909,7 +909,8 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       });
     }
 
-    const shippingCost = bodyShipping !== undefined ? Number(bodyShipping) : subtotal >= 50 ? 0 : 5;
+    // WhatsApp bot: envío SIEMPRE gratis (AI promete así)
+    const shippingCost = 0;
     const total = subtotal + shippingCost;
 
     const order = await Order.create({
