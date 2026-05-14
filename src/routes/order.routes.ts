@@ -16,6 +16,8 @@ import {
   createPayphoneLink,
   whatsappBotCheckout,
   whatsappBotCartUpdate,
+  whatsappBotCatalog,
+  whatsappBotShippingInfo,
 } from '../controllers/order.controller';
 import { authMiddleware, optionalAuthMiddleware } from '../middlewares/auth.middleware';
 
@@ -27,6 +29,10 @@ orderRouter.get('/track/:orderNumber', trackOrder);
 orderRouter.post('/guest', createGuestOrder);
 orderRouter.post('/whatsapp-bot/checkout', whatsappBotCheckout);
 orderRouter.post('/whatsapp-bot/cart-update', whatsappBotCartUpdate);
+orderRouter.post('/whatsapp-bot/catalog', whatsappBotCatalog);
+orderRouter.get('/whatsapp-bot/catalog', whatsappBotCatalog);
+orderRouter.post('/whatsapp-bot/shipping-info', whatsappBotShippingInfo);
+orderRouter.get('/whatsapp-bot/shipping-info', whatsappBotShippingInfo);
 orderRouter.post('/:id/payphone-link', createPayphoneLink);
 orderRouter.post('/payphone', optionalAuthMiddleware, createPayphoneOrder);
 orderRouter.post('/confirm-payment', optionalAuthMiddleware, confirmPayphonePayment);

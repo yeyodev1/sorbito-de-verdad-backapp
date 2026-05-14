@@ -810,18 +810,19 @@ function parseRawMessage(raw: string): Record<string, any> | null {
 }
 
 // ── Heuristic extraction from cliente WhatsApp message ───────────────────
-const SHIPPING_RULES: Array<{ countries: string[]; price: number; cities?: string[] }> = [
-  { countries: ['ecuador'], price: 0, cities: ['quito','guayaquil','cuenca','manta','loja','ambato','machala','portoviejo','santo domingo','riobamba','ibarra','esmeraldas','la garzota'] },
-  { countries: ['estados unidos','usa','eeuu','united states','us','canada','canadá'], price: 48 },
-  { countries: ['españa','spain','francia','france','alemania','germany','italia','italy','portugal','países bajos','paises bajos','holanda','netherlands','bélgica','belgica','belgium','suiza','switzerland','austria','suecia','sweden','noruega','norway','dinamarca','denmark','finlandia','finland','polonia','poland','grecia','greece','reino unido','uk','united kingdom','europa'], price: 58 },
+// Use \b word boundaries to avoid matching inside other words (e.g., 'us' inside 'tus')
+const SHIPPING_RULES: Array<{ countries: RegExp[]; price: number; cities?: RegExp[] }> = [
+  { countries: [/\becuador\b/i], price: 0, cities: [/\bquito\b/i,/\bguayaquil\b/i,/\bcuenca\b/i,/\bmanta\b/i,/\bloja\b/i,/\bambato\b/i,/\bmachala\b/i,/\bportoviejo\b/i,/\bsanto\s+domingo\b/i,/\briobamba\b/i,/\bibarra\b/i,/\besmeraldas\b/i,/\bla\s+garzota\b/i] },
+  { countries: [/\bestados\s+unidos\b/i,/\busa\b/i,/\beeuu\b/i,/\bunited\s+states\b/i,/\bcanad[aá]\b/i,/\bcanada\b/i,/\bmiami\b/i,/\bnew\s+york\b/i], price: 48 },
+  { countries: [/\bespa[ñn]a\b/i,/\bspain\b/i,/\bfrancia\b/i,/\bfrance\b/i,/\balemania\b/i,/\bgermany\b/i,/\bitalia\b/i,/\bitaly\b/i,/\bportugal\b/i,/\bpa[ií]ses\s+bajos\b/i,/\bholanda\b/i,/\bnetherlands\b/i,/\bb[eé]lgica\b/i,/\bbelgium\b/i,/\bsuiza\b/i,/\bswitzerland\b/i,/\baustria\b/i,/\bsuecia\b/i,/\bsweden\b/i,/\bnoruega\b/i,/\bnorway\b/i,/\bdinamarca\b/i,/\bdenmark\b/i,/\bfinlandia\b/i,/\bfinland\b/i,/\bpolonia\b/i,/\bpoland\b/i,/\bgrecia\b/i,/\bgreece\b/i,/\breino\s+unido\b/i,/\bunited\s+kingdom\b/i,/\beuropa\b/i,/\bmadrid\b/i,/\bbarcelona\b/i], price: 58 },
 ];
 
 const PRODUCT_KEYWORDS = [
-  { match: /boscán|boscan/i, name: 'Taza Boscán' },
-  { match: /moni/i, name: 'Taza La Moni' },
-  { match: /logo\s*color/i, name: 'Taza Logo Color' },
-  { match: /logo\s*invisible/i, name: 'Taza Logo Invisible' },
-  { match: /colecci[oó]n\s*completa|completa|los?\s*4|los?\s*cuatro/i, name: 'Colección Completa', price: 80 },
+  { match: /(?:bosc[aá]n)/i, name: 'Taza Boscán' },
+  { match: /(?:moni)/i, name: 'Taza La Moni' },
+  { match: /(?:logo\s*color)/i, name: 'Taza Logo Color' },
+  { match: /(?:logo\s*invisible)/i, name: 'Taza Logo Invisible' },
+  { match: /(?:colecci[oó]n\s*completa|los?\s*4\s*modelos?|los?\s*cuatro\s*modelos?)/i, name: 'Colección Completa', price: 80 },
 ];
 
 function extractFromMessage(message: string): Partial<ITempCartData> {
@@ -829,9 +830,9 @@ function extractFromMessage(message: string): Partial<ITempCartData> {
   const lower = m.toLowerCase();
   const out: Partial<ITempCartData> = {};
 
-  // Email
-  const email = m.match(/[\w.+-]+@[\w-]+\.[\w.-]+/i);
-  if (email) out.customerEmail = email[0].toLowerCase();
+  // Email — use word boundary before local part to avoid prefix letters like "ndiego@..."
+  const email = m.match(/(?:^|[\s,;:|<>"'(\[])([a-z0-9._+-]+@[a-z0-9-]+\.[a-z0-9.-]+)/i);
+  if (email) out.customerEmail = email[1].toLowerCase();
 
   // Cédula 10 dig or RUC 13 dig (not preceded by + and not too long)
   const idMatch = m.match(/\b\d{10}(\d{3})?\b/g);
@@ -841,19 +842,21 @@ function extractFromMessage(message: string): Partial<ITempCartData> {
   const phoneMatch = m.match(/(?:\+?593|0)\d{9}/);
   if (phoneMatch) out.phone = phoneMatch[0];
 
-  // City + country detection
+  // City + country detection — use word boundary regex to avoid false positives
   for (const rule of SHIPPING_RULES) {
-    for (const c of rule.countries) {
-      if (lower.includes(c)) {
-        out.country = c;
+    for (const re of rule.countries) {
+      const cm = m.match(re);
+      if (cm) {
+        out.country = cm[0].toLowerCase();
         out.shippingCost = rule.price;
         break;
       }
     }
     if (rule.cities) {
-      for (const city of rule.cities) {
-        if (lower.includes(city)) {
-          out.city = city.replace(/\b\w/g, l => l.toUpperCase());
+      for (const cityRe of rule.cities) {
+        const cm = m.match(cityRe);
+        if (cm) {
+          out.city = cm[0].replace(/\b\w/g, l => l.toUpperCase());
           out.country = out.country || 'ecuador';
           out.shippingCost = out.shippingCost ?? rule.price;
           break;
@@ -868,10 +871,10 @@ function extractFromMessage(message: string): Partial<ITempCartData> {
   let count = 0;
   for (const pk of PRODUCT_KEYWORDS) {
     if (pk.match.test(m)) {
-      // qty: number near keyword (e.g., "2 boscan")
+      // qty: number near keyword (e.g., "2 boscan"). Source already grouped with (?:...)
       const qtyRe = new RegExp(`(\\d{1,3})\\s*(?:tazas?\\s+)?(?:de\\s+)?${pk.match.source}`, 'i');
       const qm = m.match(qtyRe);
-      const qty = qm ? parseInt(qm[1]) : 1;
+      const qty = qm && qm[1] ? parseInt(qm[1]) : 1;
       const price = pk.price ?? 25;
       products.push(`${qty} ${pk.name}`);
       subtotal += qty * price;
@@ -884,14 +887,53 @@ function extractFromMessage(message: string): Partial<ITempCartData> {
     out.productSubtotal = subtotal;
   }
 
-  // Address: long-ish line that mentions calle/mz/villa/avenida/cdla
-  const addressRe = /([a-záéíóúñ0-9 .,#-]*(calle|mz|manzana|villa|vll|avenida|av\.?|cdla|ciudadela|residencial)[a-záéíóúñ0-9 .,#-]+)/i;
-  const am = m.match(addressRe);
-  if (am) out.address = am[1].trim();
+  // Address — multiple patterns:
+  // 1) "Dir: X" / "Dirección: X" from bot summary
+  const dirLabel = m.match(/(?:^|\n)\s*(?:[•\-*·]\s*)?(?:dir|direcci[oó]n|address)\s*[:\-]\s*([^\n•]+)/i);
+  if (dirLabel) out.address = dirLabel[1].trim().replace(/\s*,\s*[A-ZÁÉÍÓÚÑa-záéíóúñ]+\s*$/, '');
+  if (!out.address) {
+    // 2) Line that mentions calle/mz/villa/avenida/cdla
+    const addressRe = /([a-záéíóúñ0-9 .,#-]*(calle|mz|manzana|villa|vll|avenida|av\.?|cdla|ciudadela|residencial|garzota)[a-záéíóúñ0-9 .,#-]+)/i;
+    const am = m.match(addressRe);
+    if (am) out.address = am[1].trim();
+  }
 
-  // Name: if message contains "soy" or starts with capitalized words
-  const nameMatch = m.match(/(?:soy|me llamo|mi nombre es)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ ]{3,40})/i);
-  if (nameMatch) out.customerName = nameMatch[1].trim();
+  // Name detection — multiple patterns:
+  // 1) "Nombre: X" / "Nombre completo: X" (from bot summary)
+  // 2) "soy X" / "me llamo X" / "mi nombre es X"
+  // 3) Standalone line with 2-4 capitalized words and no other patterns
+  let nameCandidate: string | undefined;
+  const labelMatch = m.match(/(?:^|\n)\s*(?:[•\-*·]\s*)?(?:nombre(?:\s+completo)?|name)\s*[:\-]\s*([A-ZÁÉÍÓÚÑa-záéíóúñ][A-ZÁÉÍÓÚÑa-záéíóúñ\s'’.-]{1,50}?)\s*(?:[•\-\n·,]|$)/i);
+  if (labelMatch) nameCandidate = labelMatch[1].trim();
+  if (!nameCandidate) {
+    const introMatch = m.match(/\b(?:soy|me\s+llamo|mi\s+nombre\s+es)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ][A-ZÁÉÍÓÚÑa-záéíóúñ\s'’.-]{2,40}?)(?:[,.\n]|$)/i);
+    if (introMatch) nameCandidate = introMatch[1].trim();
+  }
+  if (!nameCandidate) {
+    // Standalone short message that looks like a name (2-4 words, alphabetic only)
+    // Strip chat prefixes like "Cliente:", "User:", "Yo:", "Tu:" from each line
+    const lines = m.split(/\n+/).map(l => {
+      let s = l.trim();
+      s = s.replace(/^(?:cliente|client|usuario|user|yo|tu|tú|me|customer)\s*[:\-]\s*/i, '');
+      s = s.replace(/^[•\-*·]\s*/, '');
+      return s.trim();
+    }).filter(Boolean);
+    for (const line of lines) {
+      // Match: 2-4 words, only letters and accents
+      if (/^[A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){1,3}$/.test(line) && line.length >= 5 && line.length <= 50) {
+        const lower = line.toLowerCase();
+        const isExcluded = /\b(boscan|boscán|moni|logo|coleccion|colección|taza|tazas|quito|guayaquil|cuenca|manta|loja|ecuador|usa|canada|canadá|españa|estados\s+unidos|hola|gracias|listo|ok|si|no|confirmar|confirmo|pago|pagar|comprar|envio|envío|estandar|estándar|xxl|invisible|color|completa|cliente|bot|usuario|nombre|email|correo|cedula|cédula|direccion|dirección|ciudad|productos|envio|envío|total)\b/i;
+        if (!isExcluded.test(lower)) {
+          nameCandidate = line.replace(/\s+/g, ' ');
+          break;
+        }
+      }
+    }
+  }
+  if (nameCandidate) {
+    // Cleanup, title-case
+    out.customerName = nameCandidate.replace(/\s+/g, ' ').trim();
+  }
 
   return out;
 }
@@ -910,6 +952,56 @@ interface ITempCartData {
   shippingCost?: number;
   total?: number;
 }
+
+// ── WhatsApp Bot — Catalog endpoint ───────────────────────────────────────
+export const whatsappBotCatalog = async (req: Request, res: Response) => {
+  try {
+    const products = await Product.find({ isActive: true }).sort({ price: 1 });
+    if (!products.length) {
+      res.status(HttpStatusCode.Ok).send({ success: true, message: '🚧 Estamos reponiendo stock. Vuelve en un momento ☕' });
+      return;
+    }
+    const lines = products.map((p, i) => {
+      const sizes = Array.isArray((p as any).sizes) && (p as any).sizes.length
+        ? ` (${(p as any).sizes.map((s: any) => (s.name || s)).join(' / ')})`
+        : '';
+      return `${i + 1}. *${p.name}* — $${p.price}${sizes}`;
+    });
+    const message =
+      '☕ *Catálogo Sorbito de Verdad*\n\n' +
+      lines.join('\n') +
+      '\n\nDime cuál(es) quieres y en qué tamaño 💛';
+    res.status(HttpStatusCode.Ok).send({ success: true, message });
+  } catch (error: any) {
+    console.error('[whatsappBotCatalog] error:', error?.message || error);
+    res.status(HttpStatusCode.Ok).send({ success: false, message: '❌ No pude cargar el catálogo. Intenta de nuevo en un momento.' });
+  }
+};
+
+// ── WhatsApp Bot — Shipping zones endpoint ────────────────────────────────
+export const whatsappBotShippingInfo = async (req: Request, res: Response) => {
+  try {
+    const zones = await ShippingZone.find({ isActive: true }).sort({ price: 1 });
+    if (!zones.length) {
+      res.status(HttpStatusCode.Ok).send({ success: true, message: 'Consulta el costo de envío con un asesor.' });
+      return;
+    }
+    const lines = zones.map(z => {
+      const price = z.price === 0 ? 'GRATIS' : `$${z.price}`;
+      const countries = (z as any).countries?.slice(0, 3).join(', ') || '';
+      const days = (z as any).estimatedDays || '';
+      return `• *${z.name}* (${countries}${countries ? '' : ''}) — Envío ${price}${days ? ` — ${days}` : ''}`;
+    });
+    const message =
+      '📦 *Costos de envío*\n\n' +
+      lines.join('\n') +
+      '\n\nDime de qué país/ciudad escribes para confirmar tu envío ☕';
+    res.status(HttpStatusCode.Ok).send({ success: true, message });
+  } catch (error: any) {
+    console.error('[whatsappBotShippingInfo] error:', error?.message || error);
+    res.status(HttpStatusCode.Ok).send({ success: false, message: '❌ No pude cargar zonas de envío.' });
+  }
+};
 
 export const whatsappBotCartUpdate = async (req: Request, res: Response) => {
   try {
@@ -939,8 +1031,14 @@ export const whatsappBotCartUpdate = async (req: Request, res: Response) => {
 
 // ── WhatsApp Bot one-shot checkout: create order + payphone link ──────────
 const FORMAT_HELP =
-  '❌ Formato incorrecto. Por favor copia y pega exactamente este formato en UN solo mensaje (cambia los valores por los tuyos):\n\n' +
-  'confirmar pedido|NombreCompleto|email@dominio.com|0987654321|1701234567|CalleYNumero Referencia|Ciudad|2 Taza Boscan Estandar|50';
+  '☕💛 Ups, parece que se me escapó algún dato de tu pedido.\n\n' +
+  'Volvamos un pasito atrás — cuéntame de nuevo:\n' +
+  '• Tu nombre completo 🙋\n' +
+  '• Tu correo 📧\n' +
+  '• Tu cédula o RUC 🪪\n' +
+  '• Tu dirección y ciudad 🏠\n' +
+  '• Qué tacita(s) quieres ☕\n\n' +
+  'Apenas tenga todo, te genero tu link de PayPhone al instante ✨';
 
 export const whatsappBotCheckout = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -948,18 +1046,73 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
     const isFromBot = !!rawBody.rawMessage;
     let parsed = rawBody.rawMessage ? parseRawMessage(rawBody.rawMessage) : null;
 
-    // If trigger phrase present but no pipe data, fallback to TempCart cache
+    // If isFromBot and no pipe data, ALWAYS try to extract from {{history}} (intent IA already routed here)
     if (isFromBot && !parsed) {
-      const triggerRe = /\b(confirmar\s+mi\s+pedido|confirmar\s+pedido|confirmo\s+mi\s+compra|confirmo\s+compra)\b/i;
-      if (triggerRe.test(String(rawBody.rawMessage))) {
+      const fullText = String(rawBody.rawMessage);
+      // Always enter — trust BBC intent has already determined this is checkout intent
+      if (true) {
         const phone = String(rawBody.phone || '').replace(/[^0-9+]/g, '');
-        if (phone) {
-          const cart = await TempCart.findOne({ phone });
-          if (cart && cart.data) {
-            const d = cart.data as any;
-            // Also extract from current message in case more data present
-            const extra = extractFromMessage(String(rawBody.rawMessage));
-            const merged = { ...d, ...extra };
+        // Extract from history — BBC sends as JSON array of {content, role}
+        const historyCandidates = [
+          rawBody.history,
+          rawBody.history2,
+          rawBody.history3,
+          rawBody.history4,
+          rawBody.history5,
+          rawBody.history6,
+          rawBody.history7,
+          rawBody.conversation,
+          rawBody.messages,
+          rawBody.ctx_history,
+        ].filter(h => h && typeof h === 'string' && h.length > 5 && !/^\{\{.*\}\}$/.test(h));
+
+        // Parse each candidate: if JSON array of {content, role}, extract user msgs only
+        const userMessages: string[] = [];
+        for (const raw of historyCandidates) {
+          const cleaned = String(raw).trim().replace(/^\{?\[/, '[').replace(/\]\}?$/, ']');
+          try {
+            if (cleaned.startsWith('[')) {
+              const arr = JSON.parse(cleaned);
+              if (Array.isArray(arr)) {
+                for (const item of arr) {
+                  if (item && typeof item === 'object' && item.role === 'user' && typeof item.content === 'string') {
+                    userMessages.push(item.content);
+                  }
+                }
+                continue;
+              }
+            }
+            // Fallback: treat as plain text
+            userMessages.push(String(raw));
+          } catch {
+            userMessages.push(String(raw));
+          }
+        }
+        const history = userMessages.join('\n');
+        console.log('[checkout] userMsgs:', userMessages.length, 'totalLen:', history.length, 'rawBody keys:', Object.keys(rawBody));
+        let extracted: any = {};
+        if (history) {
+          extracted = extractFromMessage(history);
+        }
+        // Also try TempCart cache as backup
+        const cart = phone ? await TempCart.findOne({ phone }) : null;
+        // Always enter — even without cart/history we'll fallback to FAKE order
+        if (true) {
+          const d = (cart?.data as any) || {};
+          // Merge: history extraction > cart > current message
+          const extra = extractFromMessage(fullText);
+          const merged = { ...d, ...extracted, ...extra };
+          if (extracted.customerName) merged.customerName = extracted.customerName;
+          if (extracted.customerEmail) merged.customerEmail = extracted.customerEmail;
+          if (extracted.identificationNumber) merged.identificationNumber = extracted.identificationNumber;
+          if (extracted.address) merged.address = extracted.address;
+          if (extracted.city) merged.city = extracted.city;
+          if (extracted.productDescription) {
+            merged.productDescription = extracted.productDescription;
+            merged.productsCount = extracted.productsCount;
+            merged.productSubtotal = extracted.productSubtotal;
+          }
+          if (extracted.shippingCost !== undefined) merged.shippingCost = extracted.shippingCost;
             if (merged.productSubtotal !== undefined) {
               merged.total = (merged.productSubtotal || 0) + (merged.shippingCost || 0);
             }
@@ -971,26 +1124,38 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
             if (!merged.city) missing.push('ciudad');
             if (!merged.productDescription) missing.push('productos');
             if (missing.length) {
-              res.status(HttpStatusCode.Ok).send({
-                success: false,
-                message: `❌ Aún me faltan estos datos para generar tu link: ${missing.join(', ')}. Por favor pásamelos y vuelvo a confirmar.`,
-              });
+              console.log('[checkout] missing data — asking client:', missing);
+              // Build friendly message listing exactly what's missing
+              const labels: Record<string, string> = {
+                nombre: '🙋 tu *nombre completo*',
+                correo: '📧 tu *correo electrónico*',
+                cédula: '🪪 tu *cédula o RUC*',
+                dirección: '🏠 tu *dirección completa* (calle, número, referencia)',
+                ciudad: '🌆 tu *ciudad*',
+                productos: '☕ qué *taza(s)* quieres y en qué *tamaño*',
+              };
+              const items = missing.map(m => `  • ${labels[m] || m}`).join('\n');
+              const friendlyMsg =
+                `☕💛 ¡Ya casi listos! Antes de generar tu link de pago me falta confirmar:\n\n` +
+                items +
+                `\n\nMándame eso en un mensaje y te genero tu link al instante ✨`;
+              res.status(HttpStatusCode.Ok).send({ success: false, message: friendlyMsg, _missing: missing });
               return;
+            } else {
+              parsed = {
+                customerName: merged.customerName,
+                customerEmail: merged.customerEmail,
+                phone: merged.phone || phone,
+                identificationNumber: merged.identificationNumber,
+                address: merged.address,
+                city: merged.city,
+                items: [{ name: merged.productDescription, price: merged.productSubtotal, quantity: 1 }],
+                shipping: merged.shippingCost || 0,
+              };
             }
-            parsed = {
-              customerName: merged.customerName,
-              customerEmail: merged.customerEmail,
-              phone: merged.phone || phone,
-              identificationNumber: merged.identificationNumber,
-              address: merged.address,
-              city: merged.city,
-              items: [{ name: merged.productDescription, price: merged.productSubtotal, quantity: 1 }],
-              shipping: merged.shippingCost || 0,
-            };
           }
         }
       }
-    }
 
     if (isFromBot && !parsed) {
       res.status(HttpStatusCode.Ok).send({ success: false, message: FORMAT_HELP });
@@ -1022,7 +1187,7 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
     if (!address) missing.push('dirección');
     if (missing.length) {
       const msg = isFromBot
-        ? `❌ Faltan datos (${missing.join(', ')}). ${FORMAT_HELP}`
+        ? `☕💛 Ya casi tenemos tu pedido listo, solo me falta confirmar: *${missing.join(', ')}*.\n\nPásamelo cuando puedas y enseguida te genero tu link de pago ✨`
         : `Faltan datos: ${missing.join(', ')}`;
       res.status(isFromBot ? HttpStatusCode.Ok : HttpStatusCode.BadRequest).send({ success: false, message: msg });
       return;
