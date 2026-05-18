@@ -11,6 +11,7 @@ import { emailService } from '../services/email.service';
 import { payphoneService } from '../services/payphone.service';
 import { payphoneLinksService } from '../services/payphone-links.service';
 import { bbcNotificationService } from '../services/bbc-notification.service';
+import { cloudinaryService } from '../services/cloudinary.service';
 
 export const createOrder = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
@@ -1067,7 +1068,7 @@ function detectIntent(lastMsg: string, history: string): 'catalog' | 'shipping' 
 
 interface BrainResponse {
   reply: string;
-  intent: 'catalog' | 'shipping' | 'checkout' | 'chat';
+  intent: 'catalog' | 'shipping' | 'checkout' | 'transfer' | 'chat';
   data: {
     name?: string | null;
     firstName?: string | null;
@@ -1078,6 +1079,8 @@ interface BrainResponse {
     address?: string | null;
     city?: string | null;
     country?: string | null;
+    mapsUrl?: string | null;
+    paymentMethod?: 'payphone' | 'transfer' | null;
     products?: Array<{ name: string; size?: string; qty: number; price: number }>;
     subtotal?: number;
     shipping?: number;
@@ -1087,7 +1090,7 @@ interface BrainResponse {
   missingData?: string[];
 }
 
-type BotRoute = 'catalog' | 'shipping' | 'checkout' | 'conversation';
+type BotRoute = 'catalog' | 'shipping' | 'checkout' | 'transfer' | 'conversation';
 
 interface BotDecision {
   success: true;
@@ -1132,9 +1135,35 @@ function buildCheckoutPayload(data: BrainResponse['data'], fallbackPhone: string
     address: data.address,
     city: data.city,
     country: data.country,
+    mapsUrl: data.mapsUrl,
+    paymentMethod: data.paymentMethod,
     items: [{ name: productDesc, price: subtotal, quantity: 1 }],
     shipping: data.shipping ?? 0,
     shippingZoneName: data.country || undefined,
+  };
+}
+
+function hasGoogleMapsLink(history: string): boolean {
+  if (!history) return false;
+  return /(https?:\/\/)?(www\.)?(maps\.app\.goo\.gl|goo\.gl\/maps|google\.[^/\s]+\/maps|maps\.google\.[^/\s]+)/i.test(history);
+}
+
+function enforceCheckoutRequirements(result: BrainResponse, history: string): BrainResponse {
+  const missingData = Array.isArray(result.missingData) ? [...result.missingData] : [];
+  const hasMaps = hasGoogleMapsLink(history);
+  const hasPaymentMethod = result.data?.paymentMethod === 'payphone' || result.data?.paymentMethod === 'transfer';
+
+  if (!hasMaps && !missingData.includes('ubicación Google Maps')) {
+    missingData.push('ubicación Google Maps');
+  }
+  if (!hasPaymentMethod && !missingData.includes('método de pago')) {
+    missingData.push('método de pago');
+  }
+
+  return {
+    ...result,
+    readyToCheckout: Boolean(result.readyToCheckout && hasMaps && hasPaymentMethod),
+    missingData,
   };
 }
 
@@ -1142,12 +1171,14 @@ function routeFromBrainResult(result: BrainResponse, fallbackPhone: string, sour
   let route: BotRoute = 'conversation';
   if (result.intent === 'catalog') route = 'catalog';
   if (result.intent === 'shipping') route = 'shipping';
-  if (result.readyToCheckout) route = 'checkout';
+  if (result.readyToCheckout && result.data?.paymentMethod === 'transfer') route = 'transfer';
+  if (result.readyToCheckout && result.data?.paymentMethod === 'payphone') route = 'checkout';
 
   const targetEndpointByRoute: Record<BotRoute, string> = {
     catalog: '/api/orders/whatsapp-bot/catalog',
     shipping: '/api/orders/whatsapp-bot/shipping-info',
     checkout: '/api/orders/whatsapp-bot/checkout',
+    transfer: '/api/orders/whatsapp-bot/transfer',
     conversation: '/api/orders/whatsapp-bot/assistant',
   };
 
@@ -1170,10 +1201,17 @@ function routeFromBrainResult(result: BrainResponse, fallbackPhone: string, sour
 }
 
 function buildHeuristicDecision(rawMessage: string, history: string): BrainResponse {
+  const lower = `${history}\n${rawMessage}`.toLowerCase();
+  const paymentMethod =
+    /transfer|transferencia|dep[oó]sito|deposito|banco|produbanco/.test(lower)
+      ? 'transfer'
+      : /tarjeta|payphone|link de pago|pago con tarjeta/.test(lower)
+        ? 'payphone'
+        : null;
   return {
     reply: '',
-    intent: detectIntent(rawMessage, history),
-    data: {},
+    intent: paymentMethod === 'transfer' ? 'transfer' : detectIntent(rawMessage, history),
+    data: { paymentMethod },
     readyToCheckout: false,
     missingData: [],
   };
@@ -1221,21 +1259,25 @@ DATOS MÍNIMOS para generar link PayPhone:
 7. Ciudad (city)
 8. País (country)
 9. Producto(s) con tamaño (products)
+10. Un link de Google Maps en el historial (mapsUrl)
+11. Método de pago elegido: "payphone" o "transfer" (paymentMethod)
 
 TU TAREA: Analiza SIEMPRE el historial + último mensaje. Decide el intent, responde con amabilidad y extrae todos los datos que el cliente haya dado.
 
 INTENTS:
 - "catalog": cliente pide ver catálogo, productos, tazas, opciones, fotos, qué venden
 - "shipping": cliente pregunta costos envío, delivery, a dónde envían, tiempos
+- "transfer": cliente dice que quiere pagar por transferencia bancaria
 - "checkout": cliente confirma su compra con "sí", "confirmo", "ok", "pagar", "listo", "vamos", "dale", etc. — Y previamente recibió un resumen del pedido
 - "chat": cualquier otra cosa (saludos, preguntas, selección de productos, dar datos)
 
 CRÍTICO — REGLAS PARA readyToCheckout:
-- readyToCheckout=true SOLO si están completos los 9 datos mínimos, incluyendo producto(s), y el cliente ya dijo que quiere comprar/pagar/confirmar o acaba de completar el último dato solicitado.
-- Si falta algún dato, readyToCheckout=false y missingData lista qué falta en español ("nombre", "apellido", "correo", "teléfono", "cédula", "dirección", "ciudad", "país", "productos")
+- readyToCheckout=true SOLO si están completos los 11 datos mínimos, incluyendo producto(s), Y en el historial aparece un link de Google Maps, Y ya está claro si pagará con tarjeta/link (paymentMethod=payphone) o transferencia (paymentMethod=transfer), Y el cliente ya dijo que quiere comprar/pagar/confirmar o acaba de completar el último dato solicitado.
+- Si falta algún dato, readyToCheckout=false y missingData lista qué falta en español ("nombre", "apellido", "correo", "teléfono", "cédula", "dirección", "ciudad", "país", "productos", "ubicación Google Maps", "método de pago")
 - Si intent es catalog/shipping/chat (no confirmación), readyToCheckout=false
 - Si el cliente quiere ver productos, intent="catalog" y reply="".
 - Si el cliente pregunta envío, intent="shipping" y reply="".
+- Si el cliente elige transferencia, intent="transfer".
 - Si ya hay producto(s) y todos los datos, calcula subtotal con el catálogo real, envío con la zona real, total=subtotal+shipping.
 
 TONO Sorbi (para campo "reply"):
@@ -1255,7 +1297,7 @@ REPLY según intent:
 RESPONDE ESTRICTAMENTE EN JSON, sin texto antes ni después:
 {
   "reply": "texto a enviar al cliente",
-  "intent": "catalog|shipping|checkout|chat",
+  "intent": "catalog|shipping|checkout|transfer|chat",
   "data": {
     "name": "Diego Reyes" | null,
     "firstName": "Diego" | null,
@@ -1266,6 +1308,8 @@ RESPONDE ESTRICTAMENTE EN JSON, sin texto antes ni después:
     "address": "..." | null,
     "city": "..." | null,
     "country": "Ecuador" | null,
+    "mapsUrl": "https://maps.app.goo.gl/..." | null,
+    "paymentMethod": "payphone" | "transfer" | null,
     "products": [{"name":"Taza Boscán","size":"XXL","qty":1,"price":49}] | [],
     "subtotal": 49,
     "shipping": 0,
@@ -1365,14 +1409,15 @@ export const whatsappBotBrain = async (req: Request, res: Response) => {
 
     // Router endpoint: JSON only. It never writes customer-facing copy.
     const geminiResult = await callGeminiBrain(rawMessage, history, phone);
-    console.log('[brain] gemini:', geminiResult ? `intent=${geminiResult.intent} ready=${geminiResult.readyToCheckout} missing=${geminiResult.missingData?.join(',') || '-'}` : 'null (fallback)');
+    const enforcedGeminiResult = geminiResult ? enforceCheckoutRequirements(geminiResult, history) : null;
+    console.log('[brain] gemini:', enforcedGeminiResult ? `intent=${enforcedGeminiResult.intent} ready=${enforcedGeminiResult.readyToCheckout} missing=${enforcedGeminiResult.missingData?.join(',') || '-'}` : 'null (fallback)');
 
-    if (geminiResult) {
-      res.status(HttpStatusCode.Ok).send(routeFromBrainResult(geminiResult, phone, 'gemini'));
+    if (enforcedGeminiResult) {
+      res.status(HttpStatusCode.Ok).send(routeFromBrainResult(enforcedGeminiResult, phone, 'gemini'));
       return;
     }
 
-    res.status(HttpStatusCode.Ok).send(routeFromBrainResult(buildHeuristicDecision(rawMessage, history), phone, 'heuristic'));
+    res.status(HttpStatusCode.Ok).send(routeFromBrainResult(enforceCheckoutRequirements(buildHeuristicDecision(rawMessage, history), history), phone, 'heuristic'));
   } catch (error: any) {
     console.error('[brain] error:', error?.message || error);
     res.status(HttpStatusCode.Ok).send({
@@ -1395,24 +1440,27 @@ export const whatsappBotAssistant = async (req: Request, res: Response) => {
     const history = String(req.body?.history || '');
 
     const geminiResult = await callGeminiBrain(rawMessage, history, phone);
-    if (geminiResult?.intent === 'catalog') {
+    const enforcedGeminiResult = geminiResult ? enforceCheckoutRequirements(geminiResult, history) : null;
+    if (enforcedGeminiResult?.intent === 'catalog') {
       res.status(HttpStatusCode.Ok).send({ success: true, message: await buildCatalogText(), _intent: 'catalog' });
       return;
     }
-    if (geminiResult?.intent === 'shipping') {
+    if (enforcedGeminiResult?.intent === 'shipping') {
       res.status(HttpStatusCode.Ok).send({ success: true, message: await buildShippingText(), _intent: 'shipping' });
       return;
     }
-    if (geminiResult?.readyToCheckout) {
+    if (enforcedGeminiResult?.readyToCheckout) {
       res.status(HttpStatusCode.Ok).send({
         success: true,
-        message: '☕💛 Ya tengo todo listo. Te paso al pago seguro para generar tu link.',
-        _intent: 'checkout_ready',
+        message: enforcedGeminiResult.data?.paymentMethod === 'transfer'
+          ? '☕💛 Ya tengo todo listo para darte los datos de transferencia y continuar con tu pedido.'
+          : '☕💛 Ya tengo todo listo. Te paso al pago seguro para generar tu link.',
+        _intent: enforcedGeminiResult.data?.paymentMethod === 'transfer' ? 'transfer_ready' : 'checkout_ready',
       });
       return;
     }
-    if (geminiResult?.reply && geminiResult.reply.trim()) {
-      res.status(HttpStatusCode.Ok).send({ success: true, message: geminiResult.reply, _intent: geminiResult.intent });
+    if (enforcedGeminiResult?.reply && enforcedGeminiResult.reply.trim()) {
+      res.status(HttpStatusCode.Ok).send({ success: true, message: enforcedGeminiResult.reply, _intent: enforcedGeminiResult.intent, missingData: enforcedGeminiResult.missingData || [] });
       return;
     }
 
@@ -1550,6 +1598,216 @@ export const whatsappBotCartUpdate = async (req: Request, res: Response) => {
   }
 };
 
+export const whatsappBotTransfer = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body: any = req.body || {};
+    const {
+      customerEmail,
+      customerName,
+      phone,
+      items,
+      address,
+      city,
+      country,
+      notes,
+      identificationNumber,
+      shippingZoneName,
+      shipping: bodyShipping,
+      mapsUrl,
+    } = body;
+
+    const missing: string[] = [];
+    if (!customerEmail) missing.push('correo');
+    if (!customerName) missing.push('nombre');
+    if (!phone) missing.push('teléfono');
+    if (!identificationNumber) missing.push('cédula');
+    if (!items || !Array.isArray(items) || !items.length) missing.push('productos');
+    if (!address) missing.push('dirección');
+    if (!city) missing.push('ciudad');
+    if (!country) missing.push('país');
+    if (!mapsUrl) missing.push('ubicación Google Maps');
+    if (missing.length) {
+      res.status(HttpStatusCode.BadRequest).send({ success: false, message: `Faltan datos: ${missing.join(', ')}` });
+      return;
+    }
+
+    let user = await User.findOne({ email: String(customerEmail).toLowerCase() });
+    let isNewGuest = false;
+    let tempPassword: string | undefined;
+    if (!user) {
+      isNewGuest = true;
+      tempPassword =
+        Math.random().toString(36).slice(-6) + Math.random().toString(36).slice(-4).toUpperCase() + '!';
+      user = await User.create({
+        name: customerName || String(customerEmail).split('@')[0],
+        email: String(customerEmail).toLowerCase(),
+        password: tempPassword,
+        role: 'customer',
+      });
+    }
+
+    const activeProducts = await Product.find({ isActive: true });
+    const fallbackProduct = activeProducts[0];
+    if (!fallbackProduct) {
+      res.status(HttpStatusCode.Ok).send({ success: false, message: '❌ No hay productos activos en catálogo.' });
+      return;
+    }
+
+    function findProductByName(rawName: string) {
+      const n = rawName.toLowerCase();
+      const tokens = ['boscan', 'boscán', 'moni', 'logo color', 'logo invisible', 'logo', 'coleccion', 'colección', 'completa'];
+      const matched = tokens.find(t => n.includes(t));
+      if (!matched) return fallbackProduct;
+      const found = activeProducts.find(p => {
+        const pn = (p.name || '').toLowerCase();
+        if (matched.includes('boscan') || matched.includes('boscán')) return pn.includes('boscán') || pn.includes('boscan');
+        if (matched === 'moni') return pn.includes('moni');
+        if (matched === 'logo color') return pn.includes('logo color');
+        if (matched === 'logo invisible') return pn.includes('logo invisible');
+        if (matched.includes('coleccion') || matched.includes('colección') || matched === 'completa') return pn.includes('colección') || pn.includes('coleccion');
+        if (matched === 'logo') return pn.includes('logo');
+        return false;
+      });
+      return found || fallbackProduct;
+    }
+
+    let subtotal = 0;
+    const resolvedItems: any[] = [];
+    for (const item of items) {
+      const qty = Number(item.quantity) || 1;
+      const product = item.product ? await Product.findById(item.product) : findProductByName(String(item.name || ''));
+      if (!product || !product.isActive) {
+        res.status(HttpStatusCode.BadRequest).send({ success: false, message: `Producto no disponible: ${item.product || item.name}` });
+        return;
+      }
+      const price = Number(item.price) > 0 ? Number(item.price) : product.price;
+      subtotal += price * qty;
+      resolvedItems.push({
+        product: product._id,
+        name: item.name || product.name,
+        image: product.mainImage || '',
+        quantity: qty,
+        price,
+        ...(item.sizeName && { sizeName: item.sizeName }),
+      });
+      await Product.findByIdAndUpdate(product._id, { $inc: { stock: -qty } });
+    }
+
+    const shippingCost = bodyShipping !== undefined ? Number(bodyShipping) : 0;
+    const total = subtotal + shippingCost;
+
+    const order = await Order.create({
+      user: user._id,
+      items: resolvedItems,
+      subtotal,
+      shipping: shippingCost,
+      tax: 0,
+      total,
+      shippingAddress: {
+        name: customerName || user.name,
+        phone,
+        street: address,
+        city,
+        country,
+        mapsUrl,
+      },
+      paymentMethod: 'transfer',
+      paymentStatus: 'pending',
+      ...(notes && { notes }),
+      ...(identificationNumber && { identificationNumber }),
+      ...(shippingZoneName && { shippingZoneName }),
+      source: 'whatsapp_bot',
+      whatsappPhone: phone,
+      ...(isNewGuest && tempPassword && { guestTempPassword: tempPassword }),
+      transferVerification: {
+        status: 'pending_review',
+        summary: 'Pendiente de comprobante de transferencia',
+      },
+    });
+
+    res.status(HttpStatusCode.Created).send({
+      success: true,
+      orderId: String(order._id),
+      orderNumber: order.orderNumber,
+      total,
+      message: buildTransferInstructionsMessage(order.orderNumber, total),
+      transferInstructions: {
+        region: 'Ecuador continental',
+        bank: 'Produbanco',
+        accountType: 'Cta. Cte.',
+        accountNumber: '27059016030',
+        accountHolder: 'Casa de Papel SAS',
+        ruc: '0993385430001',
+      },
+    });
+  } catch (error) {
+    next(error as any);
+  }
+};
+
+export const whatsappBotTransferReceipt = async (req: Request, res: Response) => {
+  try {
+    const { orderId, urlTempFile } = req.body || {};
+    if (!orderId || !urlTempFile) {
+      res.status(HttpStatusCode.BadRequest).send({ success: false, message: 'orderId y urlTempFile son requeridos' });
+      return;
+    }
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      res.status(HttpStatusCode.NotFound).send({ success: false, message: 'Orden no encontrada' });
+      return;
+    }
+
+    const upload = await cloudinaryService.uploadFromUrl(String(urlTempFile), 'sorbito-de-verdad/payment-receipts');
+    const analysis = await callGeminiReceiptAnalysis(upload.secure_url, order);
+    const looksConsistent = Boolean(
+      analysis.isTransferReceipt &&
+      analysis.amountMatches &&
+      analysis.destinationMatches &&
+      analysis.imageLooksValid
+    );
+
+    order.paymentReceiptUrl = upload.secure_url;
+    order.transferVerification = {
+      status: looksConsistent ? 'validated' : 'mismatch',
+      summary: analysis.summary || '',
+      detectedAmount: analysis.detectedAmount,
+      detectedDestination: analysis.detectedDestination,
+      analyzedAt: new Date(),
+    };
+    await order.save();
+
+    const message = looksConsistent
+      ? 'Gracias por enviar tu comprobante. Revisaremos la transferencia para continuar con tu pedido. Quedo atento y te escribimos apenas esté confirmado.'
+      : 'Gracias por enviarnos el comprobante. Detectamos que algo no coincide del todo con el monto, la cuenta o la imagen, así que un asesor dentro de breve se contactará para confirmar la transferencia. Ha sido un gusto atenderte.';
+
+    res.status(HttpStatusCode.Ok).send({
+      success: true,
+      orderNumber: order.orderNumber,
+      receiptUrl: upload.secure_url,
+      validation: {
+        looksConsistent,
+        amountMatches: analysis.amountMatches,
+        destinationMatches: analysis.destinationMatches,
+        imageLooksValid: analysis.imageLooksValid,
+        detectedAmount: analysis.detectedAmount,
+        detectedDestination: analysis.detectedDestination,
+        detectedBank: analysis.detectedBank,
+        detectedAccountHolder: analysis.detectedAccountHolder,
+        summary: analysis.summary,
+      },
+      message,
+    });
+  } catch (error: any) {
+    console.error('[whatsappBotTransferReceipt] error:', error?.response?.data || error?.message || error);
+    res.status(HttpStatusCode.Ok).send({
+      success: false,
+      message: 'No pude validar el comprobante en este momento. Un asesor dentro de breve se contactará para confirmar la transferencia. Muchas gracias por tu paciencia.',
+    });
+  }
+};
+
 // ── WhatsApp Bot one-shot checkout: create order + payphone link ──────────
 const FORMAT_HELP =
   '☕💛 Ups, parece que se me escapó algún dato de tu pedido.\n\n' +
@@ -1561,6 +1819,99 @@ const FORMAT_HELP =
   '• Tu dirección, ciudad y país 🏠\n' +
   '• Qué tacita(s) quieres ☕\n\n' +
   'Apenas tenga todo, te genero tu link de PayPhone al instante ✨';
+
+const TRANSFER_BANK_TEXT =
+  'Produbanco Cta. Cte. 27059016030\n' +
+  'Titular: Casa de Papel SAS\n' +
+  'RUC: 0993385430001';
+
+function buildTransferInstructionsMessage(orderNumber: string, total: number) {
+  return (
+    `🤍 Gracias por elegir *transferencia bancaria*.\n\n` +
+    `Tu pedido *${orderNumber}* queda por *$${total.toFixed(2)}* (IVA + envío incluidos).\n\n` +
+    `*Ecuador continental*\n${TRANSFER_BANK_TEXT}\n\n` +
+    `Cuando envíes la transferencia, mándame la imagen del comprobante y la revisaremos para continuar con tu pedido.`
+  );
+}
+
+async function callGeminiReceiptAnalysis(imageUrl: string, order: any) {
+  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!key) throw new Error('GEMINI_API_KEY env var is not set');
+
+  const imageResp = await axios.get<ArrayBuffer>(imageUrl, { responseType: 'arraybuffer', timeout: 30000 });
+  const mimeType = String(imageResp.headers['content-type'] || 'image/jpeg');
+  const base64 = Buffer.from(imageResp.data).toString('base64');
+  const model = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').replace(/^models\//, '');
+
+  const prompt = `Analiza este comprobante de transferencia bancaria y responde SOLO JSON.
+
+Pedido esperado:
+- orderNumber: ${order.orderNumber}
+- total exacto esperado: ${order.total.toFixed(2)} USD
+- cuenta destino exacta: 27059016030
+- banco esperado: Produbanco
+- titular esperado: Casa de Papel SAS
+- ruc esperado: 0993385430001
+
+Debes detectar:
+1. si parece realmente un comprobante de transferencia
+2. monto detectado
+3. cuenta o destino detectado
+4. banco detectado
+5. titular detectado
+6. si el monto coincide exactamente
+7. si la cuenta destino coincide claramente
+8. si hay señales de imagen borrosa, recortada o dudosa
+
+Responde EXACTAMENTE:
+{
+  "isTransferReceipt": true,
+  "amountMatches": true,
+  "destinationMatches": true,
+  "imageLooksValid": true,
+  "detectedAmount": 54,
+  "detectedDestination": "27059016030",
+  "detectedBank": "Produbanco",
+  "detectedAccountHolder": "Casa de Papel SAS",
+  "summary": "explicación breve en español"
+}`;
+
+  const response = await axios.post(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
+    {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType, data: base64 } },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 800,
+        responseMimeType: 'application/json',
+      },
+    },
+    { headers: { 'Content-Type': 'application/json' }, timeout: 45000 }
+  );
+
+  const text = response.data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') || '';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('Gemini no devolvió JSON de validación');
+  return JSON.parse(jsonMatch[0]) as {
+    isTransferReceipt: boolean;
+    amountMatches: boolean;
+    destinationMatches: boolean;
+    imageLooksValid: boolean;
+    detectedAmount?: number;
+    detectedDestination?: string;
+    detectedBank?: string;
+    detectedAccountHolder?: string;
+    summary?: string;
+  };
+}
 
 export const whatsappBotCheckout = async (req: Request, res: Response, next: NextFunction) => {
   try {

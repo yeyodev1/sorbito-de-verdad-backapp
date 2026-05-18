@@ -38,6 +38,13 @@ export interface IOrder extends Document {
   shippingZoneName?: string;
   guestTempPassword?: string;
   paymentReceiptUrl?: string;
+  transferVerification?: {
+    status: 'pending_review' | 'validated' | 'mismatch';
+    summary?: string;
+    detectedAmount?: number;
+    detectedDestination?: string;
+    analyzedAt?: Date;
+  };
   source?: string;
   payphoneLinkUrl?: string;
   payphoneLinkExpiresAt?: Date;
@@ -97,6 +104,13 @@ const orderSchema = new Schema<IOrder>(
     shippingZoneName: { type: String },
     guestTempPassword: { type: String },
     paymentReceiptUrl: { type: String },
+    transferVerification: {
+      status: { type: String, enum: ['pending_review', 'validated', 'mismatch'] },
+      summary: { type: String },
+      detectedAmount: { type: Number },
+      detectedDestination: { type: String },
+      analyzedAt: { type: Date },
+    },
     source: { type: String },
     payphoneLinkUrl: { type: String },
     payphoneLinkExpiresAt: { type: Date },

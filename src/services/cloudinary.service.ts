@@ -43,6 +43,19 @@ export class CloudinaryService {
     });
   }
 
+  async uploadFromUrl(
+    fileUrl: string,
+    folder = 'sorbito-de-verdad/products'
+  ): Promise<UploadApiResponse> {
+    return getCloudinary().uploader.upload(fileUrl, {
+      folder,
+      resource_type: 'image',
+      transformation: [
+        { width: 1600, height: 1600, crop: 'limit', quality: 'auto', fetch_format: 'auto' },
+      ],
+    });
+  }
+
   async deleteImage(publicId: string): Promise<void> {
     await getCloudinary().uploader.destroy(publicId);
   }
