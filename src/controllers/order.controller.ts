@@ -78,7 +78,7 @@ export const createOrder = async (req: AuthRequest, res: Response, next: NextFun
     // Fire-and-forget order confirmation email
     const buyer = await User.findById(req.user?.userId).select('name email');
     if (buyer) {
-      emailService.sendOrderConfirmation(buyer.email, buyer.name, String(order._id), total).catch(() => {});
+      emailService.sendOrderConfirmation(buyer.email, buyer.name, String(order._id), total).catch(() => { });
     }
 
     res.status(HttpStatusCode.Created).send({ success: true, data: order });
@@ -137,7 +137,7 @@ export const getAllOrders = async (req: AuthRequest, res: Response, next: NextFu
       const dateFilter: Record<string, Date> = {};
       // Frontend sends UTC ISO strings with proper TZ offset already applied
       if (dateFrom) dateFilter.$gte = new Date(dateFrom);
-      if (dateTo)   dateFilter.$lte = new Date(dateTo);
+      if (dateTo) dateFilter.$lte = new Date(dateTo);
       query.createdAt = dateFilter;
     }
 
@@ -213,7 +213,7 @@ export const updateOrderStatus = async (req: AuthRequest, res: Response, next: N
           order.orderNumber,
           status,
           adminNotes,
-        ).catch(() => {});
+        ).catch(() => { });
       }
     }
 
@@ -469,10 +469,10 @@ export const confirmPayphonePayment = async (req: AuthRequest, res: Response, ne
       const buyer = await User.findById(order.user).select('name email');
       if (buyer) {
         // Order confirmation email
-        emailService.sendOrderConfirmation(buyer.email, buyer.name, String(order._id), order.total).catch(() => {});
+        emailService.sendOrderConfirmation(buyer.email, buyer.name, String(order._id), order.total).catch(() => { });
         // Guest account credentials — only sent now (on confirmed payment)
         if (order.guestTempPassword) {
-          emailService.sendGuestAccountCreated(buyer.email, buyer.name, order.guestTempPassword).catch(() => {});
+          emailService.sendGuestAccountCreated(buyer.email, buyer.name, order.guestTempPassword).catch(() => { });
           order.guestTempPassword = undefined; // clear after sending
         }
       }
@@ -658,10 +658,10 @@ export const createGuestOrder = async (req: Request, res: Response, next: NextFu
       ...(isNewGuest && tempPassword && { guestTempPassword: tempPassword }),
     });
 
-    emailService.sendOrderConfirmation(user.email, user.name, String(order._id), total).catch(() => {});
+    emailService.sendOrderConfirmation(user.email, user.name, String(order._id), total).catch(() => { });
 
     if (isNewGuest && tempPassword) {
-      emailService.sendGuestAccountCreated(user.email, user.name, tempPassword).catch(() => {});
+      emailService.sendGuestAccountCreated(user.email, user.name, tempPassword).catch(() => { });
       await Order.findByIdAndUpdate(order._id, { $unset: { guestTempPassword: 1 } });
     }
 
@@ -784,9 +784,9 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
       try {
         const user = await User.findById(order.user);
         if (user?.email) {
-          emailService.sendOrderConfirmation(user.email, user.name, String(order._id), order.total).catch(() => {});
+          emailService.sendOrderConfirmation(user.email, user.name, String(order._id), order.total).catch(() => { });
         }
-      } catch {}
+      } catch { }
     } else if (isFailed) {
       order.paymentStatus = 'failed';
       if (transactionId) order.payphoneTransactionId = String(transactionId);
@@ -835,10 +835,68 @@ function parseRawMessage(raw: string): Record<string, any> | null {
 // ── Heuristic extraction from cliente WhatsApp message ───────────────────
 // Use \b word boundaries to avoid matching inside other words (e.g., 'us' inside 'tus')
 const SHIPPING_RULES: Array<{ countries: RegExp[]; price: number; cities?: RegExp[] }> = [
-  { countries: [/\becuador\b/i], price: 0, cities: [/\bquito\b/i,/\bguayaquil\b/i,/\bcuenca\b/i,/\bmanta\b/i,/\bloja\b/i,/\bambato\b/i,/\bmachala\b/i,/\bportoviejo\b/i,/\bsanto\s+domingo\b/i,/\briobamba\b/i,/\bibarra\b/i,/\besmeraldas\b/i,/\bla\s+garzota\b/i] },
-  { countries: [/\bestados\s+unidos\b/i,/\busa\b/i,/\beeuu\b/i,/\bunited\s+states\b/i,/\bcanad[aá]\b/i,/\bcanada\b/i,/\bmiami\b/i,/\bnew\s+york\b/i], price: 48 },
-  { countries: [/\bespa[ñn]a\b/i,/\bspain\b/i,/\bfrancia\b/i,/\bfrance\b/i,/\balemania\b/i,/\bgermany\b/i,/\bitalia\b/i,/\bitaly\b/i,/\bportugal\b/i,/\bpa[ií]ses\s+bajos\b/i,/\bholanda\b/i,/\bnetherlands\b/i,/\bb[eé]lgica\b/i,/\bbelgium\b/i,/\bsuiza\b/i,/\bswitzerland\b/i,/\baustria\b/i,/\bsuecia\b/i,/\bsweden\b/i,/\bnoruega\b/i,/\bnorway\b/i,/\bdinamarca\b/i,/\bdenmark\b/i,/\bfinlandia\b/i,/\bfinland\b/i,/\bpolonia\b/i,/\bpoland\b/i,/\bgrecia\b/i,/\bgreece\b/i,/\breino\s+unido\b/i,/\bunited\s+kingdom\b/i,/\beuropa\b/i,/\bmadrid\b/i,/\bbarcelona\b/i], price: 58 },
+  { countries: [/\becuador\b/i], price: 0, cities: [/\bquito\b/i, /\bguayaquil\b/i, /\bcuenca\b/i, /\bmanta\b/i, /\bloja\b/i, /\bambato\b/i, /\bmachala\b/i, /\bportoviejo\b/i, /\bsanto\s+domingo\b/i, /\briobamba\b/i, /\bibarra\b/i, /\besmeraldas\b/i, /\bla\s+garzota\b/i] },
+  { countries: [/\bestados\s+unidos\b/i, /\busa\b/i, /\beeuu\b/i, /\bunited\s+states\b/i, /\bcanad[aá]\b/i, /\bcanada\b/i, /\bmiami\b/i, /\bnew\s+york\b/i], price: 48 },
+  { countries: [/\bespa[ñn]a\b/i, /\bspain\b/i, /\bfrancia\b/i, /\bfrance\b/i, /\balemania\b/i, /\bgermany\b/i, /\bitalia\b/i, /\bitaly\b/i, /\bportugal\b/i, /\bpa[ií]ses\s+bajos\b/i, /\bholanda\b/i, /\bnetherlands\b/i, /\bb[eé]lgica\b/i, /\bbelgium\b/i, /\bsuiza\b/i, /\bswitzerland\b/i, /\baustria\b/i, /\bsuecia\b/i, /\bsweden\b/i, /\bnoruega\b/i, /\bnorway\b/i, /\bdinamarca\b/i, /\bdenmark\b/i, /\bfinlandia\b/i, /\bfinland\b/i, /\bpolonia\b/i, /\bpoland\b/i, /\bgrecia\b/i, /\bgreece\b/i, /\breino\s+unido\b/i, /\bunited\s+kingdom\b/i, /\beuropa\b/i, /\bmadrid\b/i, /\bbarcelona\b/i], price: 58 },
 ];
+
+function normalizeLocationValue(value: string | undefined | null): string {
+  return String(value || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+async function resolveShippingQuote(city?: string | null, country?: string | null) {
+  const normalizedCity = normalizeLocationValue(city);
+  const normalizedCountry = normalizeLocationValue(country);
+  const zones = await ShippingZone.find({ isActive: true }).sort({ price: 1 });
+
+  for (const rule of SHIPPING_RULES) {
+    const countryMatch = normalizedCountry && rule.countries.some((re) => re.test(normalizedCountry));
+    const cityMatch = normalizedCity && rule.cities?.some((re) => re.test(normalizedCity));
+    if (countryMatch || cityMatch) {
+      const matchedZone = zones.find((zone) => {
+        const zoneCountries = (zone.countries || []).map((entry) => normalizeLocationValue(entry));
+        return zone.price === rule.price || (normalizedCountry && zoneCountries.includes(normalizedCountry));
+      });
+      if (matchedZone) {
+        return {
+          shipping: matchedZone.price,
+          shippingZoneName: matchedZone.name,
+          estimatedDays: matchedZone.estimatedDays,
+          feeLabel: matchedZone.price === 0 ? 'Sin fee de courier' : `Fee de courier: $${matchedZone.price}`,
+        };
+      }
+      return {
+        shipping: rule.price,
+        shippingZoneName: normalizedCountry || normalizedCity || 'Zona de envío',
+        estimatedDays: '',
+        feeLabel: rule.price === 0 ? 'Sin fee de courier' : `Fee de courier: $${rule.price}`,
+      };
+    }
+  }
+
+  const zoneByCountry = zones.find((zone) =>
+    (zone.countries || []).map((entry) => normalizeLocationValue(entry)).includes(normalizedCountry)
+  );
+  if (zoneByCountry) {
+    return {
+      shipping: zoneByCountry.price,
+      shippingZoneName: zoneByCountry.name,
+      estimatedDays: zoneByCountry.estimatedDays,
+      feeLabel: zoneByCountry.price === 0 ? 'Sin fee de courier' : `Fee de courier: $${zoneByCountry.price}`,
+    };
+  }
+
+  return {
+    shipping: 0,
+    shippingZoneName: normalizedCountry || normalizedCity ? 'Por confirmar' : 'No definida',
+    estimatedDays: '',
+    feeLabel: 'Fee de courier por confirmar',
+  };
+}
 
 const PRODUCT_KEYWORDS = [
   { match: /(?:bosc[aá]n)/i, name: 'Taza Boscán' },
@@ -980,6 +1038,8 @@ interface ITempCartData {
   address?: string;
   city?: string;
   country?: string;
+  mapsUrl?: string;
+  paymentMethod?: string;
   productDescription?: string;
   productsCount?: number;
   productSubtotal?: number;
@@ -1095,30 +1155,246 @@ type BotRoute = 'catalog' | 'shipping' | 'checkout' | 'transfer' | 'conversation
 interface BotDecision {
   success: true;
   route: BotRoute;
+  flow: BotRoute;
+  nextFlow: BotRoute;
   intent: BrainResponse['intent'];
   readyToCheckout: boolean;
+  shouldRedirect: boolean;
   missingData: string[];
   targetEndpoint: string;
   data: BrainResponse['data'];
   checkoutPayload?: Record<string, unknown>;
+  transferPayload?: Record<string, unknown>;
   source: 'gemini' | 'heuristic';
 }
 
-function parseHistoryMessages(history: string): Array<{ role: 'user' | 'assistant'; content: string }> {
-  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+type BotHistoryMessage = { role: 'user' | 'assistant'; content: string };
+
+function normalizeMessageRole(value: unknown): 'user' | 'assistant' {
+  const role = String(value || '').toLowerCase();
+  return role === 'assistant' || role === 'model' || role === 'bot' || role === 'system' ? 'assistant' : 'user';
+}
+
+function normalizeMessageContent(value: any): string {
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (typeof part?.text === 'string') return part.text;
+        if (typeof part?.content === 'string') return part.content;
+        return '';
+      })
+      .join('\n')
+      .trim();
+  }
+  if (typeof value?.text === 'string') return value.text.trim();
+  if (typeof value?.content === 'string') return value.content.trim();
+  if (typeof value?.message === 'string') return value.message.trim();
+  if (typeof value?.body === 'string') return value.body.trim();
+  if (typeof value?.value === 'string') return value.value.trim();
+  return '';
+}
+
+function extractHistoryArray(input: any): any[] {
+  if (Array.isArray(input)) return input;
+  if (Array.isArray(input?.messages)) return input.messages;
+  if (Array.isArray(input?.history)) return input.history;
+  if (Array.isArray(input?.conversation)) return input.conversation;
+  if (Array.isArray(input?.data)) return input.data;
+  return [];
+}
+
+function parseHistoryMessages(history: unknown): BotHistoryMessage[] {
+  const messages: BotHistoryMessage[] = [];
   if (!history) return messages;
+
+  const appendMessages = (arr: any[]) => {
+    for (const item of arr.slice(-25)) {
+      const role = normalizeMessageRole(item?.role ?? item?.sender ?? item?.type);
+      const content = normalizeMessageContent(item?.content ?? item?.parts ?? item?.text ?? item);
+      if (content) messages.push({ role, content });
+    }
+  };
+
+  if (Array.isArray(history) || typeof history === 'object') {
+    const arr = extractHistoryArray(history);
+    if (arr.length) {
+      appendMessages(arr);
+      return messages;
+    }
+  }
+
+  const raw = String(history).trim();
+  if (!raw || /^\{\{.*\}\}$/.test(raw)) return messages;
+
   try {
-    const parsed = JSON.parse(history);
-    const arr = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.messages) ? parsed.messages : [];
-    for (const m of arr.slice(-25)) {
-      const role = m?.role === 'assistant' || m?.role === 'model' ? 'assistant' : 'user';
-      const content = typeof m?.content === 'string' ? m.content : typeof m?.text === 'string' ? m.text : '';
-      if (content.trim()) messages.push({ role, content });
+    const parsed = JSON.parse(raw);
+    const arr = extractHistoryArray(parsed);
+    if (arr.length) {
+      appendMessages(arr);
+      return messages;
     }
   } catch {
-    messages.push({ role: 'user', content: history.slice(-6000) });
+    // Plain text fallback handled below.
   }
+
+  messages.push({ role: 'user', content: raw.slice(-6000) });
   return messages;
+}
+
+function getHistoryText(history: unknown): string {
+  const messages = parseHistoryMessages(history);
+  if (messages.length) {
+    return messages
+      .map((message) => `${message.role === 'assistant' ? 'Asistente' : 'Cliente'}: ${message.content}`)
+      .join('\n')
+      .slice(-12000);
+  }
+  return typeof history === 'string' ? history.slice(-12000) : '';
+}
+
+function getLatestUserMessage(history: unknown): string {
+  const messages = parseHistoryMessages(history);
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'user' && messages[index].content.trim()) {
+      return messages[index].content.trim();
+    }
+  }
+  return '';
+}
+
+function logBotDebugBlock(title: string, payload: unknown) {
+  console.log(`\n${title}\n${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function buildFriendlyCheckoutMissingMessage(missing: string[], variant: 'link' | 'payment' = 'payment') {
+  const labels: Record<string, string> = {
+    nombre: '🙋 tu *nombre completo*',
+    correo: '📧 tu *correo electrónico*',
+    teléfono: '📱 tu *celular o teléfono*',
+    cédula: '🪪 tu *cédula o RUC*',
+    dirección: '🏠 tu *dirección completa*',
+    ciudad: '🌆 tu *ciudad*',
+    país: '🌍 tu *país*',
+    productos: '☕ qué *producto(s)* quieres',
+    'ubicación Google Maps': '📍 tu *ubicación de Google Maps*',
+  };
+  const itemsText = missing.map((item) => `• ${labels[item] || item}`).join('\n');
+  const actionText = variant === 'link' ? 'tu link de pago' : 'el pago';
+
+  return (
+    `☕💛 ¡Ya casi lo tenemos! Antes de enviarte ${actionText} me falta confirmar:\n\n` +
+    `${itemsText}\n\n` +
+    `Envíamelo por aquí y con gusto seguimos enseguida ✨`
+  );
+}
+
+function getCheckoutHistoryCandidates(rawBody: Record<string, any>): unknown[] {
+  return [
+    rawBody.history,
+    rawBody.history2,
+    rawBody.history3,
+    rawBody.history4,
+    rawBody.history5,
+    rawBody.history6,
+    rawBody.history7,
+    rawBody.conversation,
+    rawBody.messages,
+    rawBody.ctx_history,
+  ].filter(Boolean);
+}
+
+function getCheckoutHistoryText(rawBody: Record<string, any>): string {
+  const chunks = getCheckoutHistoryCandidates(rawBody)
+    .map((candidate) => getHistoryText(candidate))
+    .filter((text) => text && text.trim().length > 0);
+  return chunks.join('\n').slice(-12000);
+}
+
+function getCheckoutLatestUserMessage(rawBody: Record<string, any>): string {
+  for (const candidate of getCheckoutHistoryCandidates(rawBody)) {
+    const latest = getLatestUserMessage(candidate);
+    if (latest) return latest;
+  }
+  return '';
+}
+
+function mapBrainDataToCheckoutFields(data: BrainResponse['data'] | undefined): Partial<ITempCartData> {
+  if (!data) return {};
+  const products = Array.isArray(data.products) ? data.products : [];
+  const productDescription = products.length
+    ? products.map((product) => `${product.qty} ${product.name}${product.size ? ` ${product.size}` : ''}`).join(' + ')
+    : undefined;
+
+  return {
+    customerName: data.name || [data.firstName, data.lastName].filter(Boolean).join(' ') || undefined,
+    customerEmail: data.email || undefined,
+    phone: data.phone || undefined,
+    identificationNumber: data.id || undefined,
+    address: data.address || undefined,
+    city: data.city || undefined,
+    country: data.country || undefined,
+    productDescription,
+    productsCount: products.reduce((sum, product) => sum + (product.qty || 0), 0) || undefined,
+    productSubtotal: typeof data.subtotal === 'number' ? data.subtotal : undefined,
+    shippingCost: typeof data.shipping === 'number' ? data.shipping : undefined,
+    total: typeof data.total === 'number' ? data.total : undefined,
+  };
+}
+
+function mapCheckoutPayloadToParsed(checkoutPayload: Record<string, any> | undefined | null): Record<string, any> | null {
+  if (!checkoutPayload || typeof checkoutPayload !== 'object') return null;
+  const items = Array.isArray(checkoutPayload.items) ? checkoutPayload.items : [];
+  return {
+    customerName: checkoutPayload.customerName,
+    customerEmail: checkoutPayload.customerEmail,
+    phone: checkoutPayload.phone,
+    identificationNumber: checkoutPayload.identificationNumber,
+    address: checkoutPayload.address,
+    city: checkoutPayload.city,
+    country: checkoutPayload.country,
+    mapsUrl: checkoutPayload.mapsUrl,
+    items,
+    shipping: checkoutPayload.shipping || 0,
+    shippingZoneName: checkoutPayload.shippingZoneName,
+  };
+}
+
+function mapCheckoutPayloadToTempCartData(checkoutPayload: Record<string, any> | undefined | null): Partial<ITempCartData> {
+  if (!checkoutPayload || typeof checkoutPayload !== 'object') return {};
+  const items = Array.isArray(checkoutPayload.items) ? checkoutPayload.items : [];
+  const firstItem = items[0] || {};
+  return {
+    customerName: checkoutPayload.customerName,
+    customerEmail: checkoutPayload.customerEmail,
+    phone: checkoutPayload.phone,
+    identificationNumber: checkoutPayload.identificationNumber,
+    address: checkoutPayload.address,
+    city: checkoutPayload.city,
+    country: checkoutPayload.country,
+    mapsUrl: checkoutPayload.mapsUrl,
+    paymentMethod: checkoutPayload.paymentMethod,
+    productDescription: firstItem.name,
+    productsCount: firstItem.quantity || undefined,
+    productSubtotal: typeof firstItem.price === 'number' ? firstItem.price * (firstItem.quantity || 1) : undefined,
+    shippingCost: typeof checkoutPayload.shipping === 'number' ? checkoutPayload.shipping : undefined,
+    total: typeof firstItem.price === 'number'
+      ? (firstItem.price * (firstItem.quantity || 1)) + (checkoutPayload.shipping || 0)
+      : undefined,
+  };
+}
+
+async function storeCheckoutContext(phone: string, checkoutPayload?: Record<string, any>) {
+  if (!phone || !checkoutPayload) return;
+  const normalizedPhone = String(phone).replace(/[^0-9+]/g, '');
+  if (!normalizedPhone) return;
+  const tempData = mapCheckoutPayloadToTempCartData(checkoutPayload);
+  await TempCart.findOneAndUpdate(
+    { phone: normalizedPhone },
+    { $set: { phone: normalizedPhone, data: tempData } },
+    { upsert: true, new: true }
+  );
 }
 
 function buildCheckoutPayload(data: BrainResponse['data'], fallbackPhone: string) {
@@ -1143,15 +1419,38 @@ function buildCheckoutPayload(data: BrainResponse['data'], fallbackPhone: string
   };
 }
 
-function hasGoogleMapsLink(history: string): boolean {
-  if (!history) return false;
-  return /(https?:\/\/)?(www\.)?(maps\.app\.goo\.gl|goo\.gl\/maps|google\.[^/\s]+\/maps|maps\.google\.[^/\s]+)/i.test(history);
+function hasGoogleMapsLink(history: unknown): boolean {
+  const text = getHistoryText(history);
+  if (!text) return false;
+  return /(https?:\/\/)?(www\.)?(maps\.app\.goo\.gl|goo\.gl\/maps|google\.[^/\s]+\/maps|maps\.google\.[^/\s]+)/i.test(text);
 }
 
-function enforceCheckoutRequirements(result: BrainResponse, history: string): BrainResponse {
+function inferPaymentMethod(...sources: Array<unknown>): 'payphone' | 'transfer' | null {
+  const normalizedSources = sources
+    .map((source) => (typeof source === 'string' ? source : getHistoryText(source)))
+    .filter(Boolean)
+    .map((source) => String(source).toLowerCase());
+
+  const payphoneRegex = /tarjeta|payphone|link de pago|pago con tarjeta|visa|mastercard|cr[eé]dito|deb[ií]to/;
+  const transferRegex = /transfer|transferencia|dep[oó]sito|deposito|banco|produbanco/;
+
+  for (const text of normalizedSources) {
+    if (payphoneRegex.test(text)) return 'payphone';
+    if (transferRegex.test(text)) return 'transfer';
+  }
+
+  const text = normalizedSources.join('\n');
+  if (!text) return null;
+  if (payphoneRegex.test(text)) return 'payphone';
+  if (transferRegex.test(text)) return 'transfer';
+  return null;
+}
+
+function enforceCheckoutRequirements(result: BrainResponse, history: unknown, rawMessage = ''): BrainResponse {
   const missingData = Array.isArray(result.missingData) ? [...result.missingData] : [];
   const hasMaps = hasGoogleMapsLink(history);
-  const hasPaymentMethod = result.data?.paymentMethod === 'payphone' || result.data?.paymentMethod === 'transfer';
+  const inferredPaymentMethod = inferPaymentMethod(result.data?.paymentMethod, rawMessage, history);
+  const hasPaymentMethod = inferredPaymentMethod === 'payphone' || inferredPaymentMethod === 'transfer';
 
   if (!hasMaps && !missingData.includes('ubicación Google Maps')) {
     missingData.push('ubicación Google Maps');
@@ -1162,6 +1461,10 @@ function enforceCheckoutRequirements(result: BrainResponse, history: string): Br
 
   return {
     ...result,
+    data: {
+      ...(result.data || {}),
+      paymentMethod: inferredPaymentMethod,
+    },
     readyToCheckout: Boolean(result.readyToCheckout && hasMaps && hasPaymentMethod),
     missingData,
   };
@@ -1185,8 +1488,11 @@ function routeFromBrainResult(result: BrainResponse, fallbackPhone: string, sour
   const decision: BotDecision = {
     success: true,
     route,
+    flow: route,
+    nextFlow: route,
     intent: result.intent,
     readyToCheckout: !!result.readyToCheckout,
+    shouldRedirect: route !== 'conversation',
     missingData: result.missingData || [],
     targetEndpoint: targetEndpointByRoute[route],
     data: result.data || {},
@@ -1195,6 +1501,9 @@ function routeFromBrainResult(result: BrainResponse, fallbackPhone: string, sour
 
   if (route === 'checkout') {
     decision.checkoutPayload = buildCheckoutPayload(result.data || {}, fallbackPhone);
+  }
+  if (route === 'transfer') {
+    decision.transferPayload = buildCheckoutPayload(result.data || {}, fallbackPhone);
   }
 
   return decision;
@@ -1403,44 +1712,80 @@ OBJETIVO: capturar los 6 datos, mostrar resumen, esperar afirmación del cliente
 
 export const whatsappBotBrain = async (req: Request, res: Response) => {
   try {
-    const rawMessage = String(req.body?.rawMessage || '').trim();
+    const normalizedHistory = getHistoryText(req.body?.history);
+    const rawMessage = String(req.body?.rawMessage || getLatestUserMessage(req.body?.history) || '').trim();
     const phone = String(req.body?.phone || '').replace(/[^0-9+]/g, '');
-    const history = String(req.body?.history || '');
+    const history = normalizedHistory;
+    const historyMessages = parseHistoryMessages(req.body?.history);
+
+    logBotDebugBlock('🧠 [brain] incoming', {
+      bodyKeys: Object.keys(req.body || {}),
+      phone,
+      rawMessage,
+      historyMessages: historyMessages.length,
+      historyPreview: history.slice(-1500),
+      rawBody: req.body || {},
+    });
 
     // Router endpoint: JSON only. It never writes customer-facing copy.
     const geminiResult = await callGeminiBrain(rawMessage, history, phone);
-    const enforcedGeminiResult = geminiResult ? enforceCheckoutRequirements(geminiResult, history) : null;
-    console.log('[brain] gemini:', enforcedGeminiResult ? `intent=${enforcedGeminiResult.intent} ready=${enforcedGeminiResult.readyToCheckout} missing=${enforcedGeminiResult.missingData?.join(',') || '-'}` : 'null (fallback)');
+    const enforcedGeminiResult = geminiResult ? enforceCheckoutRequirements(geminiResult, history, rawMessage) : null;
+    logBotDebugBlock('✨ [brain] geminiResult', geminiResult);
+    logBotDebugBlock('🛡️ [brain] enforcedGeminiResult', enforcedGeminiResult);
 
     if (enforcedGeminiResult) {
-      res.status(HttpStatusCode.Ok).send(routeFromBrainResult(enforcedGeminiResult, phone, 'gemini'));
+      const responsePayload = routeFromBrainResult(enforcedGeminiResult, phone, 'gemini');
+      if (responsePayload.route === 'checkout' || responsePayload.route === 'transfer') {
+        await storeCheckoutContext(phone, (responsePayload.checkoutPayload || responsePayload.transferPayload) as Record<string, any>);
+      }
+      logBotDebugBlock('🚀 [brain] response', responsePayload);
+      res.status(HttpStatusCode.Ok).send(responsePayload);
       return;
     }
 
-    res.status(HttpStatusCode.Ok).send(routeFromBrainResult(enforceCheckoutRequirements(buildHeuristicDecision(rawMessage, history), history), phone, 'heuristic'));
+    const heuristicPayload = routeFromBrainResult(
+      enforceCheckoutRequirements(buildHeuristicDecision(rawMessage, history), history, rawMessage),
+      phone,
+      'heuristic'
+    );
+    if (heuristicPayload.route === 'checkout' || heuristicPayload.route === 'transfer') {
+      await storeCheckoutContext(phone, (heuristicPayload.checkoutPayload || heuristicPayload.transferPayload) as Record<string, any>);
+    }
+    logBotDebugBlock('🪄 [brain] heuristicResponse', heuristicPayload);
+    res.status(HttpStatusCode.Ok).send(heuristicPayload);
   } catch (error: any) {
     console.error('[brain] error:', error?.message || error);
-    res.status(HttpStatusCode.Ok).send({
+    const fallbackPayload = {
       success: true,
       route: 'conversation',
+      flow: 'conversation',
+      nextFlow: 'conversation',
       intent: 'chat',
       readyToCheckout: false,
+      shouldRedirect: false,
       missingData: [],
       targetEndpoint: '/api/orders/whatsapp-bot/assistant',
       data: {},
       source: 'heuristic',
-    });
+    };
+    logBotDebugBlock('🆘 [brain] fallbackResponse', fallbackPayload);
+    res.status(HttpStatusCode.Ok).send(fallbackPayload);
   }
 };
 
 export const whatsappBotAssistant = async (req: Request, res: Response) => {
   try {
-    const rawMessage = String(req.body?.rawMessage || '').trim();
+
+    console.log('history: ', req.body.history)
+    const normalizedHistory = getHistoryText(req.body?.history);
+    const rawMessage = String(req.body?.rawMessage || getLatestUserMessage(req.body?.history) || '').trim();
     const phone = String(req.body?.phone || '').replace(/[^0-9+]/g, '');
-    const history = String(req.body?.history || '');
+    const history = normalizedHistory;
+
+    console.log('[assistant] historyMessages:', parseHistoryMessages(req.body?.history).length, 'rawMessagePresent:', Boolean(rawMessage), 'bodyKeys:', Object.keys(req.body || {}));
 
     const geminiResult = await callGeminiBrain(rawMessage, history, phone);
-    const enforcedGeminiResult = geminiResult ? enforceCheckoutRequirements(geminiResult, history) : null;
+    const enforcedGeminiResult = geminiResult ? enforceCheckoutRequirements(geminiResult, history, rawMessage) : null;
     if (enforcedGeminiResult?.intent === 'catalog') {
       res.status(HttpStatusCode.Ok).send({ success: true, message: await buildCatalogText(), _intent: 'catalog' });
       return;
@@ -1541,6 +1886,25 @@ export const whatsappBotCatalog = async (req: Request, res: Response) => {
 // ── WhatsApp Bot — Shipping zones endpoint ────────────────────────────────
 export const whatsappBotShippingInfo = async (req: Request, res: Response) => {
   try {
+    const city = String(req.body?.city || req.query?.city || '').trim();
+    const country = String(req.body?.country || req.query?.country || '').trim();
+    if (city || country) {
+      const quote = await resolveShippingQuote(city, country);
+      res.status(HttpStatusCode.Ok).send({
+        success: true,
+        city,
+        country,
+        shipping: quote.shipping,
+        shippingZoneName: quote.shippingZoneName,
+        estimatedDays: quote.estimatedDays,
+        feeLabel: quote.feeLabel,
+        message: quote.shipping === 0
+          ? `Para ${city || country}, no se suma fee de courier.`
+          : `Para ${city || country}, se suma ${quote.feeLabel.toLowerCase()}.`,
+      });
+      return;
+    }
+
     const zones = await ShippingZone.find({ isActive: true }).sort({ price: 1 });
     if (!zones.length) {
       res.status(HttpStatusCode.Ok).send({ success: true, message: 'Consulta el costo de envío con un asesor.' });
@@ -1627,7 +1991,23 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
     if (!country) missing.push('país');
     if (!mapsUrl) missing.push('ubicación Google Maps');
     if (missing.length) {
-      res.status(HttpStatusCode.BadRequest).send({ success: false, message: `Faltan datos: ${missing.join(', ')}` });
+      const labels: Record<string, string> = {
+        nombre: '🙋 tu *nombre completo*',
+        correo: '📧 tu *correo electrónico*',
+        teléfono: '📱 tu *celular o teléfono*',
+        cédula: '🪪 tu *cédula o RUC*',
+        dirección: '🏠 tu *dirección completa*',
+        ciudad: '🌆 tu *ciudad*',
+        país: '🌍 tu *país*',
+        productos: '☕ qué *producto(s)* quieres',
+        'ubicación Google Maps': '📍 tu *ubicación de Google Maps*',
+      };
+      const itemsText = missing.map((item) => `• ${labels[item] || item}`).join('\n');
+      const friendlyMsg =
+        `☕💛 ¡Ya casi lo tenemos! Antes de enviarte el pago me falta confirmar:\n\n` +
+        `${itemsText}\n\n` +
+        `Envíamelo por aquí y con gusto seguimos enseguida ✨`;
+      res.status(HttpStatusCode.Ok).send({ success: false, message: friendlyMsg, missingData: missing });
       return;
     }
 
@@ -1693,7 +2073,10 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
       await Product.findByIdAndUpdate(product._id, { $inc: { stock: -qty } });
     }
 
-    const shippingCost = bodyShipping !== undefined ? Number(bodyShipping) : 0;
+    const shippingQuote = bodyShipping !== undefined
+      ? { shipping: Number(bodyShipping), shippingZoneName: shippingZoneName || country || 'Por confirmar', feeLabel: Number(bodyShipping) > 0 ? `Fee de courier: $${Number(bodyShipping)}` : 'Sin fee de courier', estimatedDays: '' }
+      : await resolveShippingQuote(city, country);
+    const shippingCost = Number(shippingQuote.shipping) || 0;
     const total = subtotal + shippingCost;
 
     const order = await Order.create({
@@ -1715,7 +2098,7 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
       paymentStatus: 'pending',
       ...(notes && { notes }),
       ...(identificationNumber && { identificationNumber }),
-      ...(shippingZoneName && { shippingZoneName }),
+      ...(shippingZoneName || shippingQuote.shippingZoneName ? { shippingZoneName: shippingZoneName || shippingQuote.shippingZoneName } : {}),
       source: 'whatsapp_bot',
       whatsappPhone: phone,
       ...(isNewGuest && tempPassword && { guestTempPassword: tempPassword }),
@@ -1730,7 +2113,7 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
       orderId: String(order._id),
       orderNumber: order.orderNumber,
       total,
-      message: buildTransferInstructionsMessage(order.orderNumber, total),
+      message: `${buildTransferInstructionsMessage(order.orderNumber, total)}\n\n${shippingQuote.feeLabel}.`,
       transferInstructions: {
         region: 'Ecuador continental',
         bank: 'Produbanco',
@@ -1739,6 +2122,8 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
         accountHolder: 'Casa de Papel SAS',
         ruc: '0993385430001',
       },
+      courierFee: shippingCost,
+      courierFeeLabel: shippingQuote.feeLabel,
     });
   } catch (error) {
     next(error as any);
@@ -1747,15 +2132,37 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
 
 export const whatsappBotTransferReceipt = async (req: Request, res: Response) => {
   try {
-    const { orderId, urlTempFile } = req.body || {};
-    if (!orderId || !urlTempFile) {
-      res.status(HttpStatusCode.BadRequest).send({ success: false, message: 'orderId y urlTempFile son requeridos' });
+    const input = req.method === 'GET' ? req.query : req.body;
+    const { orderId, urlTempFile, phone } = (input || {}) as Record<string, unknown>;
+    if (!urlTempFile) {
+      res.status(HttpStatusCode.Ok).send({
+        success: false,
+        message: req.method === 'GET'
+          ? 'Este endpoint recibe el comprobante por POST. Envíame urlTempFile y, si puedes, también phone u orderId para revisar tu transferencia.'
+          : 'Todavía no recibo la imagen del comprobante. Envíamela por favor y con gusto revisamos tu transferencia.',
+      });
       return;
     }
 
-    const order = await Order.findById(orderId);
+    let order = orderId ? await Order.findById(orderId) : null;
+    if (!order && phone) {
+      const normalized = normalizeWhatsappPhone(String(phone));
+      order = await Order.findOne({
+        paymentMethod: 'transfer',
+        paymentStatus: 'pending',
+        $or: [
+          { whatsappPhone: normalized },
+          { whatsappPhone: String(phone) },
+          { 'shippingAddress.phone': normalized },
+          { 'shippingAddress.phone': String(phone) },
+        ],
+      }).sort({ createdAt: -1 });
+    }
     if (!order) {
-      res.status(HttpStatusCode.NotFound).send({ success: false, message: 'Orden no encontrada' });
+      res.status(HttpStatusCode.Ok).send({
+        success: false,
+        message: 'No pude encontrar una orden pendiente de transferencia asociada a este comprobante. En breve un asesor te ayudará a confirmarla con gusto.',
+      });
       return;
     }
 
@@ -1776,14 +2183,24 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
       detectedDestination: analysis.detectedDestination,
       analyzedAt: new Date(),
     };
+    if (looksConsistent) {
+      order.paymentStatus = 'paid';
+      order.status = 'confirmed';
+    }
     await order.save();
 
     const message = looksConsistent
-      ? 'Gracias por enviar tu comprobante. Revisaremos la transferencia para continuar con tu pedido. Quedo atento y te escribimos apenas esté confirmado.'
+      ? `Gracias por enviar tu comprobante. La transferencia de tu pedido ${order.orderNumber} quedó registrada correctamente y el pago fue confirmado. Ha sido un gusto atenderte.`
       : 'Gracias por enviarnos el comprobante. Detectamos que algo no coincide del todo con el monto, la cuenta o la imagen, así que un asesor dentro de breve se contactará para confirmar la transferencia. Ha sido un gusto atenderte.';
 
+    if (order.whatsappPhone || order.shippingAddress?.phone) {
+      bbcNotificationService.sendWhatsApp(order.whatsappPhone || order.shippingAddress.phone, message).catch((err) =>
+        console.error('[whatsappBotTransferReceipt] sendWhatsApp error:', err)
+      );
+    }
+
     res.status(HttpStatusCode.Ok).send({
-      success: true,
+      success: looksConsistent,
       orderNumber: order.orderNumber,
       receiptUrl: upload.secure_url,
       validation: {
@@ -1832,6 +2249,13 @@ function buildTransferInstructionsMessage(orderNumber: string, total: number) {
     `*Ecuador continental*\n${TRANSFER_BANK_TEXT}\n\n` +
     `Cuando envíes la transferencia, mándame la imagen del comprobante y la revisaremos para continuar con tu pedido.`
   );
+}
+
+function normalizeWhatsappPhone(phone: string): string {
+  let p = String(phone || '').replace(/[^0-9+]/g, '');
+  if (p.startsWith('+')) p = p.slice(1);
+  if (p.length === 10 && p.startsWith('0')) p = '593' + p.slice(1);
+  return p;
 }
 
 async function callGeminiReceiptAnalysis(imageUrl: string, order: any) {
@@ -1915,57 +2339,104 @@ Responde EXACTAMENTE:
 
 export const whatsappBotCheckout = async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (req.method === 'GET') {
+      res.status(HttpStatusCode.Ok).send({
+        success: false,
+        message: '☕💛 Este paso recibe el pedido por *POST*. Envíame tus datos del pedido y con gusto te ayudo a generar el pago ✨',
+      });
+      return;
+    }
+
     const rawBody = req.body || {};
-    const isFromBot = !!rawBody.rawMessage;
-    let parsed = rawBody.rawMessage ? parseRawMessage(rawBody.rawMessage) : null;
+    const isFromBot = !!rawBody.rawMessage || !!rawBody.history;
+    let parsed =
+      mapCheckoutPayloadToParsed(rawBody.checkoutPayload) ||
+      mapCheckoutPayloadToParsed(rawBody.payload) ||
+      mapCheckoutPayloadToParsed(rawBody.data ? {
+        customerName: rawBody.data.name || [rawBody.data.firstName, rawBody.data.lastName].filter(Boolean).join(' '),
+        customerEmail: rawBody.data.email,
+        phone: rawBody.data.phone,
+        identificationNumber: rawBody.data.id,
+        address: rawBody.data.address,
+        city: rawBody.data.city,
+        country: rawBody.data.country,
+        mapsUrl: rawBody.data.mapsUrl,
+        shipping: rawBody.data.shipping,
+        shippingZoneName: rawBody.data.country,
+        items: Array.isArray(rawBody.data.products)
+          ? rawBody.data.products.map((product: any) => ({
+              name: `${product.qty || 1} ${product.name}${product.size ? ` ${product.size}` : ''}`,
+              price: product.price || 0,
+              quantity: 1,
+            }))
+          : [],
+      } : null) ||
+      (rawBody.rawMessage ? parseRawMessage(rawBody.rawMessage) : null);
+    const checkoutHistoryText = getCheckoutHistoryText(rawBody);
+    const checkoutLatestUserMessage = getCheckoutLatestUserMessage(rawBody);
+
+    logBotDebugBlock('🧾 [checkout] incoming', {
+      bodyKeys: Object.keys(rawBody || {}),
+      isFromBot,
+      rawMessage: rawBody.rawMessage || null,
+      phone: rawBody.phone || null,
+      hasCheckoutPayload: Boolean(rawBody.checkoutPayload),
+      hasData: Boolean(rawBody.data),
+      historyPreview: checkoutHistoryText.slice(-1500),
+      rawBody,
+    });
+
+    if (!parsed && !rawBody.rawMessage && !rawBody.history && !rawBody.phone) {
+      const recentCarts = await TempCart.find({
+        updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) },
+      }).sort({ updatedAt: -1 }).limit(2);
+
+      if (recentCarts.length) {
+        const latestCart = recentCarts[0];
+        parsed = {
+          customerName: latestCart.data?.customerName,
+          customerEmail: latestCart.data?.customerEmail,
+          phone: latestCart.data?.phone || latestCart.phone,
+          identificationNumber: latestCart.data?.identificationNumber,
+          address: latestCart.data?.address,
+          city: latestCart.data?.city,
+          country: latestCart.data?.country,
+          mapsUrl: latestCart.data?.mapsUrl,
+          items: latestCart.data?.productDescription
+            ? [{
+                name: latestCart.data.productDescription,
+                price: latestCart.data.productSubtotal || 0,
+                quantity: latestCart.data.productsCount || 1,
+              }]
+            : [],
+          shipping: latestCart.data?.shippingCost || 0,
+          shippingZoneName: latestCart.data?.country,
+        };
+        logBotDebugBlock('🛟 [checkout] recoveredFromTempCart', {
+          phone: latestCart.phone,
+          updatedAt: latestCart.updatedAt,
+          parsed,
+        });
+      }
+    }
 
     // If isFromBot and no pipe data, ALWAYS try to extract from {{history}} (intent IA already routed here)
     if (isFromBot && !parsed) {
-      const fullText = String(rawBody.rawMessage);
+      const fullText = String(rawBody.rawMessage || checkoutLatestUserMessage || '');
       // Always enter — trust BBC intent has already determined this is checkout intent
       if (true) {
         const phone = String(rawBody.phone || '').replace(/[^0-9+]/g, '');
-        // Extract from history — BBC sends as JSON array of {content, role}
-        const historyCandidates = [
-          rawBody.history,
-          rawBody.history2,
-          rawBody.history3,
-          rawBody.history4,
-          rawBody.history5,
-          rawBody.history6,
-          rawBody.history7,
-          rawBody.conversation,
-          rawBody.messages,
-          rawBody.ctx_history,
-        ].filter(h => h && typeof h === 'string' && h.length > 5 && !/^\{\{.*\}\}$/.test(h));
-
-        // Parse each candidate: if JSON array of {content, role}, extract user msgs only
-        const userMessages: string[] = [];
-        for (const raw of historyCandidates) {
-          const cleaned = String(raw).trim().replace(/^\{?\[/, '[').replace(/\]\}?$/, ']');
-          try {
-            if (cleaned.startsWith('[')) {
-              const arr = JSON.parse(cleaned);
-              if (Array.isArray(arr)) {
-                for (const item of arr) {
-                  if (item && typeof item === 'object' && item.role === 'user' && typeof item.content === 'string') {
-                    userMessages.push(item.content);
-                  }
-                }
-                continue;
-              }
-            }
-            // Fallback: treat as plain text
-            userMessages.push(String(raw));
-          } catch {
-            userMessages.push(String(raw));
-          }
-        }
-        const history = userMessages.join('\n');
-        console.log('[checkout] userMsgs:', userMessages.length, 'totalLen:', history.length, 'rawBody keys:', Object.keys(rawBody));
+        const history = checkoutHistoryText;
+        console.log('[checkout] userMsgs:', parseHistoryMessages(rawBody.history).length, 'totalLen:', history.length, 'rawBody keys:', Object.keys(rawBody));
         let extracted: any = {};
         if (history) {
           extracted = extractFromMessage(history);
+        }
+        let aiExtracted: any = {};
+        if (history) {
+          const aiBrain = await callGeminiBrain(fullText || checkoutLatestUserMessage || 'quiero pagar', history, phone);
+          aiExtracted = mapBrainDataToCheckoutFields(aiBrain?.data);
+          logBotDebugBlock('🤖 [checkout] aiBrain', aiBrain);
         }
         // Also try TempCart cache as backup
         const cart = phone ? await TempCart.findOne({ phone }) : null;
@@ -1974,7 +2445,7 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
           const d = (cart?.data as any) || {};
           // Merge: history extraction > cart > current message
           const extra = extractFromMessage(fullText);
-          const merged = { ...d, ...extracted, ...extra };
+          const merged = { ...d, ...extracted, ...aiExtracted, ...extra };
           if (extracted.customerName) merged.customerName = extracted.customerName;
           if (extracted.customerEmail) merged.customerEmail = extracted.customerEmail;
           if (extracted.phone) merged.phone = extracted.phone;
@@ -1987,55 +2458,55 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
             merged.productsCount = extracted.productsCount;
             merged.productSubtotal = extracted.productSubtotal;
           }
+          if (aiExtracted.customerName && !merged.customerName) merged.customerName = aiExtracted.customerName;
+          if (aiExtracted.customerEmail && !merged.customerEmail) merged.customerEmail = aiExtracted.customerEmail;
+          if (aiExtracted.phone && !merged.phone) merged.phone = aiExtracted.phone;
+          if (aiExtracted.identificationNumber && !merged.identificationNumber) merged.identificationNumber = aiExtracted.identificationNumber;
+          if (aiExtracted.address && !merged.address) merged.address = aiExtracted.address;
+          if (aiExtracted.city && !merged.city) merged.city = aiExtracted.city;
+          if (aiExtracted.country && !merged.country) merged.country = aiExtracted.country;
+          if (aiExtracted.productDescription && !merged.productDescription) {
+            merged.productDescription = aiExtracted.productDescription;
+            merged.productsCount = aiExtracted.productsCount;
+            merged.productSubtotal = aiExtracted.productSubtotal;
+          }
           if (extracted.shippingCost !== undefined) merged.shippingCost = extracted.shippingCost;
-            if (merged.productSubtotal !== undefined) {
-              merged.total = (merged.productSubtotal || 0) + (merged.shippingCost || 0);
-            }
-            const missing: string[] = [];
-            if (!merged.customerName) missing.push('nombre');
-            if (!merged.customerEmail) missing.push('correo');
-            if (!(merged.phone || phone)) missing.push('teléfono');
-            if (!merged.identificationNumber) missing.push('cédula');
-            if (!merged.address) missing.push('dirección');
-            if (!merged.city) missing.push('ciudad');
-            if (!merged.country) missing.push('país');
-            if (!merged.productDescription) missing.push('productos');
-            if (missing.length) {
-              console.log('[checkout] missing data — asking client:', missing);
-              // Build friendly message listing exactly what's missing
-              const labels: Record<string, string> = {
-                nombre: '🙋 tu *nombre completo*',
-                correo: '📧 tu *correo electrónico*',
-                teléfono: '📱 tu *celular o teléfono*',
-                cédula: '🪪 tu *cédula o RUC*',
-                dirección: '🏠 tu *dirección completa* (calle, número, referencia)',
-                ciudad: '🌆 tu *ciudad*',
-                país: '🌍 tu *país*',
-                productos: '☕ qué *taza(s)* quieres y en qué *tamaño*',
-              };
-              const items = missing.map(m => `  • ${labels[m] || m}`).join('\n');
-              const friendlyMsg =
-                `☕💛 ¡Ya casi listos! Antes de generar tu link de pago me falta confirmar:\n\n` +
-                items +
-                `\n\nMándame eso en un mensaje y te genero tu link al instante ✨`;
-              res.status(HttpStatusCode.Ok).send({ success: false, message: friendlyMsg, _missing: missing });
-              return;
-            } else {
-              parsed = {
-                customerName: merged.customerName,
-                customerEmail: merged.customerEmail,
-                phone: merged.phone || phone,
-                identificationNumber: merged.identificationNumber,
-                address: merged.address,
-                city: merged.city,
-                country: merged.country,
-                items: [{ name: merged.productDescription, price: merged.productSubtotal, quantity: 1 }],
-                shipping: merged.shippingCost || 0,
-              };
-            }
+          if (aiExtracted.shippingCost !== undefined && merged.shippingCost === undefined) merged.shippingCost = aiExtracted.shippingCost;
+          if (merged.productSubtotal !== undefined) {
+            merged.total = (merged.productSubtotal || 0) + (merged.shippingCost || 0);
+          }
+          logBotDebugBlock('🧩 [checkout] mergedData', merged);
+          const missing: string[] = [];
+          if (!merged.customerName) missing.push('nombre');
+          if (!merged.customerEmail) missing.push('correo');
+          if (!(merged.phone || phone)) missing.push('teléfono');
+          if (!merged.identificationNumber) missing.push('cédula');
+          if (!merged.address) missing.push('dirección');
+          if (!merged.city) missing.push('ciudad');
+          if (!merged.country) missing.push('país');
+          if (!merged.productDescription) missing.push('productos');
+          if (missing.length) {
+            console.log('[checkout] missing data — asking client:', missing);
+            const friendlyMsg = buildFriendlyCheckoutMissingMessage(missing, 'link');
+            res.status(HttpStatusCode.Ok).send({ success: false, message: friendlyMsg, _missing: missing });
+            return;
+          } else {
+            parsed = {
+              customerName: merged.customerName,
+              customerEmail: merged.customerEmail,
+              phone: merged.phone || phone,
+              identificationNumber: merged.identificationNumber,
+              address: merged.address,
+              city: merged.city,
+              country: merged.country,
+              items: [{ name: merged.productDescription, price: merged.productSubtotal, quantity: 1 }],
+              shipping: merged.shippingCost || 0,
+            };
+            logBotDebugBlock('✅ [checkout] parsedFromHistory', parsed);
           }
         }
       }
+    }
 
     if (isFromBot && !parsed) {
       res.status(HttpStatusCode.Ok).send({ success: false, message: FORMAT_HELP });
@@ -2043,6 +2514,7 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
     }
 
     const body: any = parsed ? { ...rawBody, ...parsed } : rawBody;
+    logBotDebugBlock('📦 [checkout] finalBody', body);
     if (parsed && rawBody.phone) {
       body.phone = parsed.phone || String(rawBody.phone).replace(/[^0-9+]/g, '');
     }
@@ -2071,10 +2543,8 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
     if (!city) missing.push('ciudad');
     if (!country) missing.push('país');
     if (missing.length) {
-      const msg = isFromBot
-        ? `☕💛 Ya casi tenemos tu pedido listo, solo me falta confirmar: *${missing.join(', ')}*.\n\nPásamelo cuando puedas y enseguida te genero tu link de pago ✨`
-        : `Faltan datos: ${missing.join(', ')}`;
-      res.status(isFromBot ? HttpStatusCode.Ok : HttpStatusCode.BadRequest).send({ success: false, message: msg });
+      const msg = buildFriendlyCheckoutMissingMessage(missing, 'link');
+      res.status(HttpStatusCode.Ok).send({ success: false, message: msg, missingData: missing });
       return;
     }
 
@@ -2144,8 +2614,10 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       });
     }
 
-    // WhatsApp bot: AI envía shipping ya calculado según zona (Ecuador=$0, USA/Canada=$48, Europa=$58, etc.)
-    const shippingCost = bodyShipping !== undefined ? Number(bodyShipping) : 0;
+    const shippingQuote = bodyShipping !== undefined
+      ? { shipping: Number(bodyShipping), shippingZoneName: shippingZoneName || country || 'Por confirmar', feeLabel: Number(bodyShipping) > 0 ? `Fee de courier: $${Number(bodyShipping)}` : 'Sin fee de courier', estimatedDays: '' }
+      : await resolveShippingQuote(city, country);
+    const shippingCost = Number(shippingQuote.shipping) || 0;
     const total = subtotal + shippingCost;
 
     const order = await Order.create({
@@ -2166,7 +2638,7 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       paymentMethod: 'payphone',
       ...(notes && { notes }),
       ...(identificationNumber && { identificationNumber }),
-      ...(shippingZoneName && { shippingZoneName }),
+      ...(shippingZoneName || shippingQuote.shippingZoneName ? { shippingZoneName: shippingZoneName || shippingQuote.shippingZoneName } : {}),
       source: 'whatsapp_bot',
       whatsappPhone: phone,
       ...(isNewGuest && tempPassword && { guestTempPassword: tempPassword }),
@@ -2193,13 +2665,14 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
 
     // Clean TempCart for this phone after successful order
     if (phone) {
-      TempCart.deleteOne({ phone }).catch(() => {});
+      TempCart.deleteOne({ phone }).catch(() => { });
     }
 
     const message =
       `✅💛 *¡Tu pedido está listo!*\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n` +
       `🧾 Pedido: ${order.orderNumber}\n` +
+      `🚚 ${shippingQuote.feeLabel}\n` +
       `💰 Total: *$${total.toFixed(2)}*\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n\n` +
       `💳 *Paga aquí 👇*\n${paymentLink}\n\n` +

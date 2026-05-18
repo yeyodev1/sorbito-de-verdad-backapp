@@ -16,6 +16,12 @@ export function optionalAuthMiddleware(req: AuthRequest, _res: Response, next: N
 }
 
 export function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  const requestPath = String((req as any).originalUrl || (req as any).url || '');
+  if (requestPath.includes('/whatsapp-bot/')) {
+    next();
+    return;
+  }
+
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {

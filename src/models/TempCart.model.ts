@@ -5,10 +5,13 @@ export interface ITempCart extends Document {
   data: {
     customerName?: string;
     customerEmail?: string;
+    phone?: string;
     identificationNumber?: string;
     address?: string;
     city?: string;
     country?: string;
+    mapsUrl?: string;
+    paymentMethod?: string;
     productDescription?: string;
     productsCount?: number;
     productSubtotal?: number;
@@ -25,10 +28,13 @@ const tempCartSchema = new Schema<ITempCart>(
     data: {
       customerName: String,
       customerEmail: String,
+      phone: String,
       identificationNumber: String,
       address: String,
       city: String,
       country: String,
+      mapsUrl: String,
+      paymentMethod: String,
       productDescription: String,
       productsCount: Number,
       productSubtotal: Number,
