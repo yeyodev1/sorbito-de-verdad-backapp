@@ -18,6 +18,8 @@ import {
   whatsappBotCartUpdate,
   whatsappBotCatalog,
   whatsappBotShippingInfo,
+  whatsappBotBrain,
+  whatsappBotAssistant,
 } from '../controllers/order.controller';
 import { authMiddleware, optionalAuthMiddleware } from '../middlewares/auth.middleware';
 
@@ -33,6 +35,8 @@ orderRouter.post('/whatsapp-bot/catalog', whatsappBotCatalog);
 orderRouter.get('/whatsapp-bot/catalog', whatsappBotCatalog);
 orderRouter.post('/whatsapp-bot/shipping-info', whatsappBotShippingInfo);
 orderRouter.get('/whatsapp-bot/shipping-info', whatsappBotShippingInfo);
+orderRouter.post('/whatsapp-bot/brain', whatsappBotBrain);
+orderRouter.post('/whatsapp-bot/assistant', whatsappBotAssistant);
 orderRouter.post('/:id/payphone-link', createPayphoneLink);
 orderRouter.post('/payphone', optionalAuthMiddleware, createPayphoneOrder);
 orderRouter.post('/confirm-payment', optionalAuthMiddleware, confirmPayphonePayment);

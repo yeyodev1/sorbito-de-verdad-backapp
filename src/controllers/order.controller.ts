@@ -1,4 +1,4 @@
-import { HttpStatusCode } from 'axios';
+import axios, { HttpStatusCode } from 'axios';
 import { Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import { Order } from '../models/Order.model';
@@ -115,12 +115,22 @@ export const getAllOrders = async (req: AuthRequest, res: Response, next: NextFu
       return;
     }
 
-    const { status, dateFrom, dateTo, sort = '-createdAt', limit = '200', search, source } = req.query as Record<string, string>;
+    const { status, dateFrom, dateTo, sort = '-createdAt', limit = '200', search, source, page } = req.query as Record<string, string>;
 
     const query: Record<string, unknown> = {};
 
-    if (status) query.status = status;
-    if (source) query.source = source;
+    if (status) {
+      query.status = status.includes(',') ? { $in: status.split(',') } : status;
+    }
+    if (source === 'web') {
+      query.$or = [
+        { source: 'web' },
+        { source: { $exists: false } },
+        { source: '' },
+      ];
+    } else if (source) {
+      query.source = source;
+    }
 
     if (dateFrom || dateTo) {
       const dateFilter: Record<string, Date> = {};
@@ -133,25 +143,37 @@ export const getAllOrders = async (req: AuthRequest, res: Response, next: NextFu
     if (search) {
       const matchingUsers = await User.find({ name: { $regex: search, $options: 'i' } }).select('_id');
       const userIds = matchingUsers.map(u => u._id);
-      (query as Record<string, unknown>).$or = [
+      const searchOr = [
         { identificationNumber: { $regex: search, $options: 'i' } },
         { 'shippingAddress.phone': { $regex: search, $options: 'i' } },
         { user: { $in: userIds } },
       ];
+      if (query.$or) {
+        // Combine with existing $or (from source=web)
+        query.$and = [{ $or: query.$or }, { $or: searchOr }];
+        delete query.$or;
+      } else {
+        query.$or = searchOr;
+      }
     }
 
     // Conteos reales por estado (siempre, sin importar el filtro activo)
     const allStatuses = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled'];
-    const [countResults, orders] = await Promise.all([
+    const pageSize = parseInt(limit);
+    const currentPage = Math.max(1, parseInt(page) || 1);
+    const skip = (currentPage - 1) * pageSize;
+
+    const [countResults, totalFiltered, orders] = await Promise.all([
       Promise.all(allStatuses.map(s => Order.countDocuments({ status: s }))),
-      Order.find(query).populate('user', 'name email').sort(sort).limit(parseInt(limit)),
+      Order.countDocuments(query),
+      Order.find(query).populate('user', 'name email').sort(sort).skip(skip).limit(pageSize),
     ]);
 
     const counts: Record<string, number> = {};
     allStatuses.forEach((s, i) => { counts[s] = countResults[i]; });
     const total = countResults.reduce((a, b) => a + b, 0);
 
-    res.send({ success: true, data: orders, counts, total });
+    res.send({ success: true, data: orders, counts, total, totalFiltered, page: currentPage, pageSize });
   } catch (error) {
     next(error);
   }
@@ -865,18 +887,29 @@ function extractFromMessage(message: string): Partial<ITempCartData> {
     }
   }
 
-  // Products + count
+  // Products + count + size-based pricing
   const products: string[] = [];
   let subtotal = 0;
   let count = 0;
+  const hasXXL = /\bxxl\b/i.test(m);
   for (const pk of PRODUCT_KEYWORDS) {
     if (pk.match.test(m)) {
-      // qty: number near keyword (e.g., "2 boscan"). Source already grouped with (?:...)
       const qtyRe = new RegExp(`(\\d{1,3})\\s*(?:tazas?\\s+)?(?:de\\s+)?${pk.match.source}`, 'i');
       const qm = m.match(qtyRe);
       const qty = qm && qm[1] ? parseInt(qm[1]) : 1;
-      const price = pk.price ?? 25;
-      products.push(`${qty} ${pk.name}`);
+      // Base price ($25 for tazas, $80 for colección)
+      let price = pk.price ?? 25;
+      let sizeLabel = '';
+      // XXL upgrade: $25 → $49 only for individual tazas (not Colección which is Estándar only)
+      if (hasXXL && !pk.match.source.includes('colecci')) {
+        price = 49;
+        sizeLabel = ' XXL';
+      } else if (pk.price === 80) {
+        sizeLabel = ' Estándar';
+      } else {
+        sizeLabel = ' Estándar';
+      }
+      products.push(`${qty} ${pk.name}${sizeLabel}`);
       subtotal += qty * price;
       count += qty;
     }
@@ -953,6 +986,463 @@ interface ITempCartData {
   total?: number;
 }
 
+// ── WhatsApp Bot — BRAIN endpoint ─────────────────────────────────────────
+// Single entry point: receives rawMessage + phone + history → decides response.
+// Returns { message } for BBC to send back to client.
+
+async function buildCatalogText(): Promise<string> {
+  const products = await Product.find({ isActive: true }).sort({ price: 1 });
+  if (!products.length) return '🚧 Estamos reponiendo stock. Vuelve en un momento ☕';
+  const iconFor = (n: string) => {
+    const l = n.toLowerCase();
+    if (l.includes('boscán') || l.includes('boscan')) return '👨‍💼';
+    if (l.includes('moni')) return '👩‍🦰';
+    if (l.includes('logo color')) return '🎨';
+    if (l.includes('logo invisible')) return '🪄';
+    if (l.includes('colecci')) return '🎁';
+    return '☕';
+  };
+  const lines = products.map((p, i) => {
+    const sizes = Array.isArray((p as any).sizes) ? (p as any).sizes : [];
+    let sizesText = '';
+    if (sizes.length) {
+      const sp = sizes.map((s: any) => {
+        const n = s.name || s;
+        const pr = s.price ?? p.price;
+        const ic = /xxl/i.test(n) ? '🍺' : '☕';
+        return `${ic} ${n} $${pr}`;
+      });
+      sizesText = `\n   ${sp.join('  •  ')}`;
+    } else sizesText = ` — $${p.price}`;
+    return `${i + 1}. ${iconFor(p.name)} *${p.name}*${sizesText}`;
+  });
+  return '☕💛 *Catálogo Sorbito de Verdad*\n━━━━━━━━━━━━━━━━━━━━━\n\n' +
+    lines.join('\n\n') +
+    '\n\n━━━━━━━━━━━━━━━━━━━━━\n✨ Dime cuál(es) quieres y en qué tamaño 🚀';
+}
+
+async function buildShippingText(): Promise<string> {
+  const zones = await ShippingZone.find({ isActive: true }).sort({ price: 1 });
+  if (!zones.length) return 'Consulta el costo de envío con un asesor.';
+  const ic = (n: string) => {
+    const l = n.toLowerCase();
+    if (l.includes('ecuador')) return '🇪🇨';
+    if (l.includes('estados') || l.includes('canad')) return '🇺🇸';
+    if (l.includes('europa')) return '🇪🇺';
+    return '🌍';
+  };
+  const lines = zones.map(z => {
+    const pl = z.price === 0 ? '🆓 *GRATIS*' : `💵 *$${z.price}*`;
+    const c = (z as any).countries?.slice(0, 3).join(', ') || '';
+    const d = (z as any).estimatedDays || '';
+    return `${ic(z.name)} *${z.name}*\n   ${pl}${d ? `  •  ⏱️ ${d}` : ''}\n   📍 ${c}`;
+  });
+  return '📦💛 *Costos de envío*\n━━━━━━━━━━━━━━━━━━━━━\n\n' +
+    lines.join('\n\n') +
+    '\n\n━━━━━━━━━━━━━━━━━━━━━\n✨ Dime de qué país/ciudad escribes ☕';
+}
+
+function detectIntent(lastMsg: string, history: string): 'catalog' | 'shipping' | 'checkout' | 'chat' {
+  const l = (lastMsg || '').toLowerCase();
+  // Catalog: explicit catalog/products request
+  if (/\b(cat[aá]logo|productos|qu[eé]\s+venden|qu[eé]\s+tienen|qu[eé]\s+modelos|tazas\s+disponibles|mostr[aá]rme|ver\s+(?:opciones|tazas|catalogo|productos|fotos|im[aá]genes)|ense[ñn]ar|opciones\s+disponibles)\b/i.test(l)) {
+    return 'catalog';
+  }
+  // Shipping: explicit shipping question
+  if (/\b(env[ií]o|env[ií]os|shipping|delivery|cu[aá]nto\s+(?:cobran|cuesta)\s+(?:el\s+)?env[ií]o|costo\s+(?:de\s+)?env[ií]o|a\s+d[oó]nde\s+env[ií]an|tiempo\s+de\s+entrega)\b/i.test(l)) {
+    return 'shipping';
+  }
+  // Checkout: confirmation phrases — must come after seeing a summary in history
+  const summaryShown = /tu\s+pedido|resumen|total\s*:?\s*\$|📋/i.test(history);
+  const confirmRe = /\b(s[ií]|ok|confirm[oa]r?|confirmo|listo|vamos|dale|pagar|paga|pago|pagamos|env[ií]a\s+(?:el\s+)?link|dame\s+(?:el\s+)?link|genera\s+(?:el\s+)?link|todo\s+bien|perfecto|est[aá]\s+bien|adelante)\b/i;
+  if (summaryShown && confirmRe.test(l)) {
+    return 'checkout';
+  }
+  // Also: explicit "quiero pagar" anywhere
+  if (/\b(quiero\s+pagar|finalizar\s+(?:el\s+)?pedido|generar\s+link|comprar\s+ya)\b/i.test(l)) {
+    return 'checkout';
+  }
+  return 'chat';
+}
+
+interface BrainResponse {
+  reply: string;
+  intent: 'catalog' | 'shipping' | 'checkout' | 'chat';
+  data: {
+    name?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+    email?: string | null;
+    id?: string | null;
+    phone?: string | null;
+    address?: string | null;
+    city?: string | null;
+    country?: string | null;
+    products?: Array<{ name: string; size?: string; qty: number; price: number }>;
+    subtotal?: number;
+    shipping?: number;
+    total?: number;
+  };
+  readyToCheckout: boolean;
+  missingData?: string[];
+}
+
+type BotRoute = 'catalog' | 'shipping' | 'checkout' | 'conversation';
+
+interface BotDecision {
+  success: true;
+  route: BotRoute;
+  intent: BrainResponse['intent'];
+  readyToCheckout: boolean;
+  missingData: string[];
+  targetEndpoint: string;
+  data: BrainResponse['data'];
+  checkoutPayload?: Record<string, unknown>;
+  source: 'gemini' | 'heuristic';
+}
+
+function parseHistoryMessages(history: string): Array<{ role: 'user' | 'assistant'; content: string }> {
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  if (!history) return messages;
+  try {
+    const parsed = JSON.parse(history);
+    const arr = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.messages) ? parsed.messages : [];
+    for (const m of arr.slice(-25)) {
+      const role = m?.role === 'assistant' || m?.role === 'model' ? 'assistant' : 'user';
+      const content = typeof m?.content === 'string' ? m.content : typeof m?.text === 'string' ? m.text : '';
+      if (content.trim()) messages.push({ role, content });
+    }
+  } catch {
+    messages.push({ role: 'user', content: history.slice(-6000) });
+  }
+  return messages;
+}
+
+function buildCheckoutPayload(data: BrainResponse['data'], fallbackPhone: string) {
+  const products = Array.isArray(data.products) && data.products.length ? data.products : [];
+  const productDesc = products.map(p => `${p.qty} ${p.name}${p.size ? ' ' + p.size : ''}`).join(' + ');
+  const subtotal = data.subtotal ?? products.reduce((s, p) => s + (p.price || 0) * (p.qty || 1), 0);
+  const fullName = data.name || [data.firstName, data.lastName].filter(Boolean).join(' ');
+
+  return {
+    customerName: fullName,
+    customerEmail: data.email,
+    phone: data.phone || fallbackPhone,
+    identificationNumber: data.id,
+    address: data.address,
+    city: data.city,
+    country: data.country,
+    items: [{ name: productDesc, price: subtotal, quantity: 1 }],
+    shipping: data.shipping ?? 0,
+    shippingZoneName: data.country || undefined,
+  };
+}
+
+function routeFromBrainResult(result: BrainResponse, fallbackPhone: string, source: BotDecision['source']): BotDecision {
+  let route: BotRoute = 'conversation';
+  if (result.intent === 'catalog') route = 'catalog';
+  if (result.intent === 'shipping') route = 'shipping';
+  if (result.readyToCheckout) route = 'checkout';
+
+  const targetEndpointByRoute: Record<BotRoute, string> = {
+    catalog: '/api/orders/whatsapp-bot/catalog',
+    shipping: '/api/orders/whatsapp-bot/shipping-info',
+    checkout: '/api/orders/whatsapp-bot/checkout',
+    conversation: '/api/orders/whatsapp-bot/assistant',
+  };
+
+  const decision: BotDecision = {
+    success: true,
+    route,
+    intent: result.intent,
+    readyToCheckout: !!result.readyToCheckout,
+    missingData: result.missingData || [],
+    targetEndpoint: targetEndpointByRoute[route],
+    data: result.data || {},
+    source,
+  };
+
+  if (route === 'checkout') {
+    decision.checkoutPayload = buildCheckoutPayload(result.data || {}, fallbackPhone);
+  }
+
+  return decision;
+}
+
+function buildHeuristicDecision(rawMessage: string, history: string): BrainResponse {
+  return {
+    reply: '',
+    intent: detectIntent(rawMessage, history),
+    data: {},
+    readyToCheckout: false,
+    missingData: [],
+  };
+}
+
+async function callGeminiBrain(userMsg: string, history: string, phone: string): Promise<BrainResponse | null> {
+  const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (!key) {
+    console.warn('[brain] No GEMINI_API_KEY configured, using heuristics only');
+    return null;
+  }
+  try {
+    // Fetch catalog + shipping for system context
+    const products = await Product.find({ isActive: true });
+    const zones = await ShippingZone.find({ isActive: true });
+
+    const catalogText = products.map(p => {
+      const sizes = (p as any).sizes || [];
+      const sizeStr = sizes.length
+        ? sizes.map((s: any) => `${s.name || s} $${s.price ?? p.price}`).join(' / ')
+        : `$${p.price}`;
+      return `- ${p.name}: ${sizeStr}`;
+    }).join('\n');
+
+    const shippingText = zones.map(z => {
+      const c = (z as any).countries?.join(', ') || '';
+      return `- ${z.name} (${c}): ${z.price === 0 ? 'GRATIS' : '$' + z.price}`;
+    }).join('\n');
+
+    const systemPrompt = `Eres "Sorbi", asistente de ventas WhatsApp de Sorbito de Verdad — tazas artesanales del canal de Andersson Boscán y La Moni.
+
+CATÁLOGO REAL (NO inventes precios fuera de esta lista):
+${catalogText}
+
+ZONAS DE ENVÍO:
+${shippingText}
+
+DATOS MÍNIMOS para generar link PayPhone:
+1. Nombre (firstName)
+2. Apellido (lastName)
+3. Correo (email)
+4. Celular/teléfono (phone)
+5. Cédula 10 dig o RUC 13 dig (id)
+6. Dirección completa (address)
+7. Ciudad (city)
+8. País (country)
+9. Producto(s) con tamaño (products)
+
+TU TAREA: Analiza SIEMPRE el historial + último mensaje. Decide el intent, responde con amabilidad y extrae todos los datos que el cliente haya dado.
+
+INTENTS:
+- "catalog": cliente pide ver catálogo, productos, tazas, opciones, fotos, qué venden
+- "shipping": cliente pregunta costos envío, delivery, a dónde envían, tiempos
+- "checkout": cliente confirma su compra con "sí", "confirmo", "ok", "pagar", "listo", "vamos", "dale", etc. — Y previamente recibió un resumen del pedido
+- "chat": cualquier otra cosa (saludos, preguntas, selección de productos, dar datos)
+
+CRÍTICO — REGLAS PARA readyToCheckout:
+- readyToCheckout=true SOLO si están completos los 9 datos mínimos, incluyendo producto(s), y el cliente ya dijo que quiere comprar/pagar/confirmar o acaba de completar el último dato solicitado.
+- Si falta algún dato, readyToCheckout=false y missingData lista qué falta en español ("nombre", "apellido", "correo", "teléfono", "cédula", "dirección", "ciudad", "país", "productos")
+- Si intent es catalog/shipping/chat (no confirmación), readyToCheckout=false
+- Si el cliente quiere ver productos, intent="catalog" y reply="".
+- Si el cliente pregunta envío, intent="shipping" y reply="".
+- Si ya hay producto(s) y todos los datos, calcula subtotal con el catálogo real, envío con la zona real, total=subtotal+shipping.
+
+TONO Sorbi (para campo "reply"):
+- Cálido, ecuatoriano, tutea ("tú")
+- Mensajes cortos (máx 4 líneas)
+- Emojis ☕ 💛
+- NUNCA escales a humano
+- NUNCA inventes productos/precios fuera del catálogo
+- NUNCA digas "ya generé link" — el sistema lo hace si readyToCheckout=true
+
+REPLY según intent:
+- catalog/shipping: deja reply vacío "" — el sistema reemplaza con el listado dinámico
+- checkout + readyToCheckout=true: deja reply vacío "" — el sistema genera link
+- checkout + readyToCheckout=false: reply pide DATO FALTANTE específico con tono Sorbi
+- chat: respuesta conversacional natural pidiendo siguiente paso o el siguiente dato faltante
+
+RESPONDE ESTRICTAMENTE EN JSON, sin texto antes ni después:
+{
+  "reply": "texto a enviar al cliente",
+  "intent": "catalog|shipping|checkout|chat",
+  "data": {
+    "name": "Diego Reyes" | null,
+    "firstName": "Diego" | null,
+    "lastName": "Reyes" | null,
+    "email": "..." | null,
+    "id": "0954227641" | null,
+    "phone": "${phone}",
+    "address": "..." | null,
+    "city": "..." | null,
+    "country": "Ecuador" | null,
+    "products": [{"name":"Taza Boscán","size":"XXL","qty":1,"price":49}] | [],
+    "subtotal": 49,
+    "shipping": 0,
+    "total": 49
+  },
+  "readyToCheckout": true|false,
+  "missingData": ["nombre","correo"]
+}`;
+
+    const messages = parseHistoryMessages(history);
+    if (!messages.length || messages[messages.length - 1].role !== 'user' || messages[messages.length - 1].content !== userMsg) {
+      messages.push({ role: 'user', content: userMsg });
+    }
+
+    const model = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').replace(/^models\//, '');
+    const contents = messages.map(m => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }],
+    }));
+    const r = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
+      {
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents,
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 1500,
+          responseMimeType: 'application/json',
+        },
+      },
+      { headers: { 'Content-Type': 'application/json' }, timeout: 25000 }
+    );
+
+    const text = r.data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    const parsed = JSON.parse(jsonMatch[0]) as BrainResponse;
+    return parsed;
+  } catch (e: any) {
+    console.error('[Gemini] err:', e?.response?.data || e?.message);
+    return null;
+  }
+}
+
+const SORBI_SYSTEM_PROMPT = `Eres "Sorbi", asistente de ventas WhatsApp de Sorbito de Verdad — tazas artesanales del canal de Andersson Boscán y La Moni.
+
+TONO: Cálido, ecuatoriano, tutea ("tú"). Mensajes cortos (máx 4 líneas). Emojis ☕ 💛. NUNCA escalas a humanos.
+
+REGLA #1 — NO tienes catálogo memorizado:
+- Si el cliente pregunta por productos, precios, catálogo, tazas, dile que escriba "ver catálogo" y el sistema lo muestra automáticamente.
+- Si pregunta por envío, dile que escriba "envío".
+- NUNCA inventes precios ni productos.
+
+DATOS MÍNIMOS para generar link de pago:
+1. Nombre
+2. Apellido
+3. Correo
+4. Celular/teléfono
+5. Cédula (10 dig) o RUC (13 dig)
+6. Dirección (calle, número, referencia)
+7. Ciudad
+8. País
+9. Producto + tamaño
+
+FLUJO:
+1) Saluda. Ofrece mostrar catálogo.
+2) Confirma taza + tamaño elegido.
+3) Pregunta ciudad/país (si quiere ver costos envío, dile "escribe envío").
+4) Pide los datos faltantes en limpio, uno o varios, sin escalar a humano.
+5) Cuando tengas TODOS los datos, muestra resumen:
+
+📋 *Tu pedido*
+• Nombre: [nombre]
+• Email: [email]
+• Teléfono: [phone]
+• Cédula: [cédula]
+• Dir: [dirección], [ciudad], [país]
+• Productos: [qty + nombre] = $[subtotal]
+• Envío: [zona] = $[envío]
+• *TOTAL: $[total]*
+
+Para finalizar dime: *"sí confirmar"* ☕
+
+PROHIBICIONES:
+- NO inventes catálogo/precios.
+- NO digas "ya generé link". El sistema lo hace, no tú.
+- NO escales a humano.
+- NO invites a confirmar SIN tener los 6 datos.
+
+OBJETIVO: capturar los 6 datos, mostrar resumen, esperar afirmación del cliente.`;
+
+export const whatsappBotBrain = async (req: Request, res: Response) => {
+  try {
+    const rawMessage = String(req.body?.rawMessage || '').trim();
+    const phone = String(req.body?.phone || '').replace(/[^0-9+]/g, '');
+    const history = String(req.body?.history || '');
+
+    // Router endpoint: JSON only. It never writes customer-facing copy.
+    const geminiResult = await callGeminiBrain(rawMessage, history, phone);
+    console.log('[brain] gemini:', geminiResult ? `intent=${geminiResult.intent} ready=${geminiResult.readyToCheckout} missing=${geminiResult.missingData?.join(',') || '-'}` : 'null (fallback)');
+
+    if (geminiResult) {
+      res.status(HttpStatusCode.Ok).send(routeFromBrainResult(geminiResult, phone, 'gemini'));
+      return;
+    }
+
+    res.status(HttpStatusCode.Ok).send(routeFromBrainResult(buildHeuristicDecision(rawMessage, history), phone, 'heuristic'));
+  } catch (error: any) {
+    console.error('[brain] error:', error?.message || error);
+    res.status(HttpStatusCode.Ok).send({
+      success: true,
+      route: 'conversation',
+      intent: 'chat',
+      readyToCheckout: false,
+      missingData: [],
+      targetEndpoint: '/api/orders/whatsapp-bot/assistant',
+      data: {},
+      source: 'heuristic',
+    });
+  }
+};
+
+export const whatsappBotAssistant = async (req: Request, res: Response) => {
+  try {
+    const rawMessage = String(req.body?.rawMessage || '').trim();
+    const phone = String(req.body?.phone || '').replace(/[^0-9+]/g, '');
+    const history = String(req.body?.history || '');
+
+    const geminiResult = await callGeminiBrain(rawMessage, history, phone);
+    if (geminiResult?.intent === 'catalog') {
+      res.status(HttpStatusCode.Ok).send({ success: true, message: await buildCatalogText(), _intent: 'catalog' });
+      return;
+    }
+    if (geminiResult?.intent === 'shipping') {
+      res.status(HttpStatusCode.Ok).send({ success: true, message: await buildShippingText(), _intent: 'shipping' });
+      return;
+    }
+    if (geminiResult?.readyToCheckout) {
+      res.status(HttpStatusCode.Ok).send({
+        success: true,
+        message: '☕💛 Ya tengo todo listo. Te paso al pago seguro para generar tu link.',
+        _intent: 'checkout_ready',
+      });
+      return;
+    }
+    if (geminiResult?.reply && geminiResult.reply.trim()) {
+      res.status(HttpStatusCode.Ok).send({ success: true, message: geminiResult.reply, _intent: geminiResult.intent });
+      return;
+    }
+
+    const heuristic = detectIntent(rawMessage, history);
+    if (heuristic === 'catalog') {
+      res.status(HttpStatusCode.Ok).send({ success: true, message: await buildCatalogText(), _intent: 'catalog_heuristic' });
+      return;
+    }
+    if (heuristic === 'shipping') {
+      res.status(HttpStatusCode.Ok).send({ success: true, message: await buildShippingText(), _intent: 'shipping_heuristic' });
+      return;
+    }
+
+    const lower = rawMessage.toLowerCase();
+    let fallback = '☕💛 Cuéntame más — ¿quieres ver el *catálogo*, los *costos de envío*, o ya tienes claro qué taza quieres?';
+    if (/^(hola|buenas|hey|hi|holi)/i.test(lower)) {
+      fallback = '¡Hola! ☕💛 Soy *Sorbi* de Sorbito de Verdad.\n\n¿Te muestro las tacitas? Solo escribe *"ver catálogo"* ✨';
+    } else if (/gracias|listo/i.test(lower)) {
+      fallback = '¡De nada! ☕💛 ¿Algo más en lo que te pueda ayudar?';
+    }
+    res.status(HttpStatusCode.Ok).send({ success: true, message: fallback, _intent: 'chat_fallback' });
+  } catch (error: any) {
+    console.error('[assistant] error:', error?.message || error);
+    res.status(HttpStatusCode.Ok).send({
+      success: false,
+      message: '☕💛 Disculpa, tuve un pequeño problema. ¿Puedes intentar de nuevo?'
+    });
+  }
+};
+
 // ── WhatsApp Bot — Catalog endpoint ───────────────────────────────────────
 export const whatsappBotCatalog = async (req: Request, res: Response) => {
   try {
@@ -961,16 +1451,38 @@ export const whatsappBotCatalog = async (req: Request, res: Response) => {
       res.status(HttpStatusCode.Ok).send({ success: true, message: '🚧 Estamos reponiendo stock. Vuelve en un momento ☕' });
       return;
     }
+    // Icon mapping by product name keywords
+    const iconFor = (name: string) => {
+      const n = name.toLowerCase();
+      if (n.includes('boscán') || n.includes('boscan')) return '👨‍💼';
+      if (n.includes('moni')) return '👩‍🦰';
+      if (n.includes('logo color')) return '🎨';
+      if (n.includes('logo invisible')) return '🪄';
+      if (n.includes('colecci')) return '🎁';
+      return '☕';
+    };
     const lines = products.map((p, i) => {
-      const sizes = Array.isArray((p as any).sizes) && (p as any).sizes.length
-        ? ` (${(p as any).sizes.map((s: any) => (s.name || s)).join(' / ')})`
-        : '';
-      return `${i + 1}. *${p.name}* — $${p.price}${sizes}`;
+      const sizes = Array.isArray((p as any).sizes) ? (p as any).sizes : [];
+      let sizesText = '';
+      if (sizes.length) {
+        const sizeParts = sizes.map((s: any) => {
+          const name = s.name || s;
+          const price = s.price ?? p.price;
+          const sizeIcon = /xxl/i.test(name) ? '🍺' : '☕';
+          return `${sizeIcon} ${name} $${price}`;
+        });
+        sizesText = `\n   ${sizeParts.join('  •  ')}`;
+      } else {
+        sizesText = ` — $${p.price}`;
+      }
+      return `${i + 1}. ${iconFor(p.name)} *${p.name}*${sizesText}`;
     });
     const message =
-      '☕ *Catálogo Sorbito de Verdad*\n\n' +
-      lines.join('\n') +
-      '\n\nDime cuál(es) quieres y en qué tamaño 💛';
+      '☕💛 *Catálogo Sorbito de Verdad*\n' +
+      '━━━━━━━━━━━━━━━━━━━━━\n\n' +
+      lines.join('\n\n') +
+      '\n\n━━━━━━━━━━━━━━━━━━━━━\n' +
+      '✨ Dime cuál(es) quieres y en qué tamaño y armamos tu pedido 🚀';
     res.status(HttpStatusCode.Ok).send({ success: true, message });
   } catch (error: any) {
     console.error('[whatsappBotCatalog] error:', error?.message || error);
@@ -986,16 +1498,25 @@ export const whatsappBotShippingInfo = async (req: Request, res: Response) => {
       res.status(HttpStatusCode.Ok).send({ success: true, message: 'Consulta el costo de envío con un asesor.' });
       return;
     }
+    const iconForZone = (name: string) => {
+      const n = name.toLowerCase();
+      if (n.includes('ecuador')) return '🇪🇨';
+      if (n.includes('estados') || n.includes('canad')) return '🇺🇸';
+      if (n.includes('europa')) return '🇪🇺';
+      return '🌍';
+    };
     const lines = zones.map(z => {
-      const price = z.price === 0 ? 'GRATIS' : `$${z.price}`;
+      const priceLabel = z.price === 0 ? '🆓 *GRATIS*' : `💵 *$${z.price}*`;
       const countries = (z as any).countries?.slice(0, 3).join(', ') || '';
       const days = (z as any).estimatedDays || '';
-      return `• *${z.name}* (${countries}${countries ? '' : ''}) — Envío ${price}${days ? ` — ${days}` : ''}`;
+      return `${iconForZone(z.name)} *${z.name}*\n   ${priceLabel}${days ? `  •  ⏱️ ${days}` : ''}\n   📍 ${countries}`;
     });
     const message =
-      '📦 *Costos de envío*\n\n' +
-      lines.join('\n') +
-      '\n\nDime de qué país/ciudad escribes para confirmar tu envío ☕';
+      '📦💛 *Costos de envío*\n' +
+      '━━━━━━━━━━━━━━━━━━━━━\n\n' +
+      lines.join('\n\n') +
+      '\n\n━━━━━━━━━━━━━━━━━━━━━\n' +
+      '✨ Dime de qué país/ciudad escribes y confirmamos tu envío ☕';
     res.status(HttpStatusCode.Ok).send({ success: true, message });
   } catch (error: any) {
     console.error('[whatsappBotShippingInfo] error:', error?.message || error);
@@ -1035,8 +1556,9 @@ const FORMAT_HELP =
   'Volvamos un pasito atrás — cuéntame de nuevo:\n' +
   '• Tu nombre completo 🙋\n' +
   '• Tu correo 📧\n' +
+  '• Tu celular o teléfono 📱\n' +
   '• Tu cédula o RUC 🪪\n' +
-  '• Tu dirección y ciudad 🏠\n' +
+  '• Tu dirección, ciudad y país 🏠\n' +
   '• Qué tacita(s) quieres ☕\n\n' +
   'Apenas tenga todo, te genero tu link de PayPhone al instante ✨';
 
@@ -1104,9 +1626,11 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
           const merged = { ...d, ...extracted, ...extra };
           if (extracted.customerName) merged.customerName = extracted.customerName;
           if (extracted.customerEmail) merged.customerEmail = extracted.customerEmail;
+          if (extracted.phone) merged.phone = extracted.phone;
           if (extracted.identificationNumber) merged.identificationNumber = extracted.identificationNumber;
           if (extracted.address) merged.address = extracted.address;
           if (extracted.city) merged.city = extracted.city;
+          if (extracted.country) merged.country = extracted.country;
           if (extracted.productDescription) {
             merged.productDescription = extracted.productDescription;
             merged.productsCount = extracted.productsCount;
@@ -1119,9 +1643,11 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
             const missing: string[] = [];
             if (!merged.customerName) missing.push('nombre');
             if (!merged.customerEmail) missing.push('correo');
+            if (!(merged.phone || phone)) missing.push('teléfono');
             if (!merged.identificationNumber) missing.push('cédula');
             if (!merged.address) missing.push('dirección');
             if (!merged.city) missing.push('ciudad');
+            if (!merged.country) missing.push('país');
             if (!merged.productDescription) missing.push('productos');
             if (missing.length) {
               console.log('[checkout] missing data — asking client:', missing);
@@ -1129,9 +1655,11 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
               const labels: Record<string, string> = {
                 nombre: '🙋 tu *nombre completo*',
                 correo: '📧 tu *correo electrónico*',
+                teléfono: '📱 tu *celular o teléfono*',
                 cédula: '🪪 tu *cédula o RUC*',
                 dirección: '🏠 tu *dirección completa* (calle, número, referencia)',
                 ciudad: '🌆 tu *ciudad*',
+                país: '🌍 tu *país*',
                 productos: '☕ qué *taza(s)* quieres y en qué *tamaño*',
               };
               const items = missing.map(m => `  • ${labels[m] || m}`).join('\n');
@@ -1149,6 +1677,7 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
                 identificationNumber: merged.identificationNumber,
                 address: merged.address,
                 city: merged.city,
+                country: merged.country,
                 items: [{ name: merged.productDescription, price: merged.productSubtotal, quantity: 1 }],
                 shipping: merged.shippingCost || 0,
               };
@@ -1173,6 +1702,7 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       items,
       address,
       city,
+      country,
       state,
       notes,
       identificationNumber,
@@ -1182,9 +1712,13 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
 
     const missing: string[] = [];
     if (!customerEmail) missing.push('correo');
+    if (!customerName) missing.push('nombre');
     if (!phone) missing.push('teléfono');
+    if (!identificationNumber) missing.push('cédula');
     if (!items || !Array.isArray(items) || !items.length) missing.push('productos');
     if (!address) missing.push('dirección');
+    if (!city) missing.push('ciudad');
+    if (!country) missing.push('país');
     if (missing.length) {
       const msg = isFromBot
         ? `☕💛 Ya casi tenemos tu pedido listo, solo me falta confirmar: *${missing.join(', ')}*.\n\nPásamelo cuando puedas y enseguida te genero tu link de pago ✨`
@@ -1274,8 +1808,8 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
         name: customerName || user.name,
         phone,
         street: address,
-        city: city || 'Ecuador',
-        country: 'Ecuador',
+        city,
+        country,
         ...(state && { state }),
       },
       paymentMethod: 'payphone',
@@ -1312,9 +1846,14 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
     }
 
     const message =
-      `✅ Pedido ${order.orderNumber} creado por $${total.toFixed(2)}\n\n` +
-      `Paga aquí 👇\n${paymentLink}\n\n` +
-      `Link válido 24h. Cuando confirmes el pago te aviso por aquí ☕`;
+      `✅💛 *¡Tu pedido está listo!*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `🧾 Pedido: ${order.orderNumber}\n` +
+      `💰 Total: *$${total.toFixed(2)}*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `💳 *Paga aquí 👇*\n${paymentLink}\n\n` +
+      `⏰ Link válido por 24h\n` +
+      `📲 En cuanto confirmes el pago te aviso por aquí ☕✨`;
 
     res.status(HttpStatusCode.Created).send({
       success: true,

@@ -7,7 +7,6 @@ import uploadRouter from './upload.routes';
 import adminRouter from './admin.routes';
 import shippingZoneRouter from './shippingZone.routes';
 import { payphoneWebhook, payphoneLinkWebhook } from '../controllers/order.controller';
-import { paymentRemindersCron } from '../controllers/cron.controller';
 
 function routerApi(app: Application) {
   const router = express.Router();
@@ -25,9 +24,6 @@ function routerApi(app: Application) {
   router.get('/webhook/payphone', payphoneWebhook);
   router.post('/webhook/payphone-link', payphoneLinkWebhook);
 
-  // Cron — Vercel Cron / external scheduler hits this. Requires CRON_SECRET.
-  router.get('/cron/payment-reminders', paymentRemindersCron);
-  router.post('/cron/payment-reminders', paymentRemindersCron);
 }
 
 export default routerApi;
