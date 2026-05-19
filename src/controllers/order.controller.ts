@@ -2225,7 +2225,7 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
       || ''
     ).trim();
 
-    const phone = String(
+    let phone = String(
       (raw as any).phone
       || (raw as any).whatsappPhone
       || (raw as any).telefono
@@ -2243,11 +2243,48 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
 
     const aiImage = (raw as any).aiImage || (raw as any).data?.aiImage || undefined;
 
+    // ── Extract from history (conversation context) ──────────────────────────
+    // IMPORTANT: only use USER messages for extraction, NOT assistant messages
+    // (assistant messages contain AI image analysis with irrelevant phone numbers)
+    let userMessagesText = '';
+    let extractedFromHistory: { phone?: string; email?: string } = {};
+    let extractedFromHistoryFull = '';
+    let orderNumberFromHistory = '';
+
+    if ((raw as any).history || (raw as any).conversation || (raw as any).messages) {
+      const messages = parseHistoryMessages(
+        (raw as any).history || (raw as any).conversation || (raw as any).messages
+      );
+      const userParts = messages
+        .filter(m => m.role === 'user')
+        .map(m => m.content)
+        .filter(Boolean);
+      userMessagesText = userParts.join('\n').slice(-12000);
+      extractedFromHistory = extractPhoneOrEmail(userMessagesText);
+      extractedFromHistoryFull = getCheckoutHistoryText(raw as Record<string, any>);
+
+      // Try to extract order number (SDV-XXXXXXX) from the FULL conversation
+      const orderNumMatch = extractedFromHistoryFull.match(/\b(SDV-[A-Z0-9]+)\b/i);
+      if (orderNumMatch) orderNumberFromHistory = orderNumMatch[1].toUpperCase();
+
+      console.log('[whatsappBotTransferReceipt] history extracted:', {
+        userMessagesLength: userMessagesText.length,
+        extractedFromHistory,
+        orderNumberFromHistory: orderNumberFromHistory || null,
+      });
+    }
+
+    // ── Use history-extracted data as fallback ────────────────────────────────
+    if (!phone && extractedFromHistory.phone) {
+      phone = normalizeWhatsappPhone(extractedFromHistory.phone);
+    }
+
     console.log('[whatsappBotTransferReceipt] extracted:', {
       orderId: orderId || null,
       urlTempFile: urlTempFile ? `${urlTempFile.slice(0, 80)}...` : null,
       phone: phone || null,
       aiImage: aiImage ? `${String(aiImage).slice(0, 150)}...` : null,
+      hasHistory: Boolean(userMessagesText),
     });
 
     if (!urlTempFile) {
@@ -2260,7 +2297,27 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
       return;
     }
 
+    // ── Order search: orderId > orderNumber > email > phone ───────────────────
     let order = orderId ? await Order.findById(orderId) : null;
+    if (!order && orderNumberFromHistory) {
+      order = await Order.findOne({ orderNumber: orderNumberFromHistory, paymentMethod: 'transfer' }).sort({ createdAt: -1 });
+      console.log('[whatsappBotTransferReceipt] search by orderNumber:', orderNumberFromHistory, order ? 'found' : 'not found');
+    }
+    if (!order && extractedFromHistory.email) {
+      const userByEmail = await User.findOne({ email: extractedFromHistory.email });
+      if (userByEmail) {
+        order = await Order.findOne({ user: userByEmail._id, paymentMethod: 'transfer', paymentStatus: 'pending' }).sort({ createdAt: -1 });
+        console.log('[whatsappBotTransferReceipt] search by email:', extractedFromHistory.email, order ? 'found' : 'not found');
+        // Also try any status (not just pending) — receipt might arrive after timeout
+        if (!order) {
+          order = await Order.findOne({ user: userByEmail._id, paymentMethod: 'transfer' }).sort({ createdAt: -1 });
+          console.log('[whatsappBotTransferReceipt] search by email (any status):', extractedFromHistory.email, order ? 'found' : 'not found');
+        }
+      } else {
+        // User might not exist yet — try to find order by email in shippingAddress
+        order = await Order.findOne({ 'shippingAddress.name': { $regex: extractedFromHistory.email.split('@')[0], $options: 'i' }, paymentMethod: 'transfer' }).sort({ createdAt: -1 });
+      }
+    }
     if (!order && phone) {
       const normalized = normalizeWhatsappPhone(String(phone));
       order = await Order.findOne({
@@ -2274,9 +2331,37 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         ],
       }).sort({ createdAt: -1 });
     }
+    // ── Last resort: search by customer name from history ─────────────────────
+    if (!order && userMessagesText) {
+      const fromMsg = extractFromMessage(userMessagesText);
+      if (fromMsg.customerName) {
+        order = await Order.findOne({ 'shippingAddress.name': { $regex: fromMsg.customerName, $options: 'i' }, paymentMethod: 'transfer' }).sort({ createdAt: -1 });
+        console.log('[whatsappBotTransferReceipt] search by name:', fromMsg.customerName, order ? 'found' : 'not found');
+      }
+    }
     // ── Auto-crear orden si no existe ─────────────────────────────────────────
     if (!order) {
       console.log('[whatsappBotTransferReceipt] orden no encontrada — intentando crear desde los datos disponibles');
+
+      // ── Extraer datos del historial (solo mensajes de usuario) ──────────────
+      let historyName = '';
+      let historyEmail = '';
+      let historyAddress = '';
+      let historyCity = '';
+      let historyCountry = '';
+      let historyProducts = '';
+      let historyIdentification = '';
+      if (userMessagesText) {
+        const extracted = extractFromMessage(userMessagesText);
+        historyName = extracted.customerName || '';
+        historyEmail = extracted.customerEmail || '';
+        historyAddress = extracted.address || '';
+        historyCity = extracted.city || '';
+        historyCountry = extracted.country || '';
+        historyProducts = extracted.productDescription || '';
+        historyIdentification = extracted.identificationNumber || '';
+        console.log('[whatsappBotTransferReceipt] extracted from history:', { historyName, historyEmail, historyProducts });
+      }
 
       // Intentar recuperar datos desde TempCart (conversación guardada por el brain)
       let tempCartData: Record<string, any> = {};
@@ -2292,40 +2377,48 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         (raw as any).customerName || (raw as any).name
         || (raw as any).data?.customerName || (raw as any).data?.name
         || tempCartData.customerName || tempCartData.name
+        || historyName
         || ''
       ).trim();
       const customerEmail = String(
         (raw as any).customerEmail || (raw as any).email
         || (raw as any).data?.customerEmail || (raw as any).data?.email
         || tempCartData.customerEmail || tempCartData.email
+        || historyEmail
         || ''
       ).toLowerCase().trim();
       const identificationNumber = String(
         (raw as any).identificationNumber || (raw as any).cedula || (raw as any).id
         || (raw as any).data?.identificationNumber
         || tempCartData.identificationNumber || tempCartData.id
+        || historyIdentification
         || ''
       );
       const address = String(
         (raw as any).address || (raw as any).direccion
         || (raw as any).data?.address
         || tempCartData.address
+        || historyAddress
         || ''
       );
       const city = String(
         (raw as any).city || (raw as any).ciudad
         || (raw as any).data?.city
         || tempCartData.city
+        || historyCity
         || ''
       );
       const country = String(
         (raw as any).country || (raw as any).pais
         || (raw as any).data?.country
         || tempCartData.country
+        || historyCountry
         || ''
       );
       const productDescription = String(
-        tempCartData.productDescription || tempCartData.items?.[0]?.name || ''
+        tempCartData.productDescription || tempCartData.items?.[0]?.name
+        || historyProducts
+        || ''
       );
       const productSubtotal = Number(tempCartData.productSubtotal || 0);
       const productsCount = Number(tempCartData.productsCount || 1);
@@ -2443,7 +2536,15 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
     }
 
     const upload = await cloudinaryService.uploadFromUrl(String(urlTempFile), 'sorbito-de-verdad/payment-receipts');
-    const analysis = await callGeminiReceiptAnalysis(upload.secure_url, order, aiImage as string | undefined);
+    let analysis: any = null;
+    try {
+      analysis = await callGeminiReceiptAnalysis(upload.secure_url, order, aiImage as string | undefined);
+    } catch (geminiError: any) {
+      console.error('[whatsappBotTransferReceipt] Gemini analysis crashed:', geminiError?.message || geminiError);
+    }
+    if (!analysis) {
+      analysis = { isTransferReceipt: true, amountMatches: false, destinationMatches: false, imageLooksValid: false, summary: 'Error al analizar comprobante. Pendiente de revisión manual.' };
+    }
     const looksConsistent = Boolean(
       analysis.isTransferReceipt &&
       analysis.amountMatches &&
@@ -2634,17 +2735,46 @@ Responde EXACTAMENTE:
       ],
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 800,
-        responseMimeType: 'application/json',
+        maxOutputTokens: 2000,
       },
     },
     { headers: { 'Content-Type': 'application/json' }, timeout: 45000 }
   );
 
   const text = response.data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') || '';
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Gemini no devolvió JSON de validación');
-  return JSON.parse(jsonMatch[0]) as {
+  console.log('[callGeminiReceiptAnalysis] raw response:', text.slice(0, 800));
+
+  // Helper: extraer JSON incluso si está envuelto en ```json ... ``` o truncado
+  function extractJSON(raw: string): any {
+    // Remove markdown code block markers if present
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '');
+    // Try strict parse first
+    try { return JSON.parse(cleaned); } catch { }
+    // Try finding a complete JSON object { ... }
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+      try { return JSON.parse(match[0]); } catch { }
+    }
+    // If truncated (no closing }), inject it and try
+    if (cleaned.includes('{') && !cleaned.trim().endsWith('}')) {
+      const withClosing = cleaned.substring(cleaned.indexOf('{'));
+      try { return JSON.parse(withClosing + (withClosing.endsWith('}') ? '' : '}')); } catch { }
+    }
+    return null;
+  }
+
+  const parsed = extractJSON(text);
+  if (!parsed) {
+    console.error('[callGeminiReceiptAnalysis] Could not extract JSON for order:', order.orderNumber);
+    return {
+      isTransferReceipt: true,
+      amountMatches: false,
+      destinationMatches: false,
+      imageLooksValid: false,
+      summary: 'No se pudo analizar automáticamente. Pendiente de revisión manual.',
+    };
+  }
+  return parsed as {
     isTransferReceipt: boolean;
     amountMatches: boolean;
     destinationMatches: boolean;
