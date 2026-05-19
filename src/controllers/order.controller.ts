@@ -2291,8 +2291,8 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
       res.status(HttpStatusCode.Ok).send({
         success: false,
         message: req.method === 'GET'
-          ? 'Este endpoint recibe el comprobante por POST. Envíame urlTempFile y, si puedes, también phone u orderId para revisar tu transferencia.'
-          : 'Todavía no recibo la imagen del comprobante. Envíamela por favor y con gusto revisamos tu transferencia.',
+          ? '📸 Este endpoint recibe el comprobante por POST. Envíame urlTempFile y, si puedes, también phone u orderId para revisar tu transferencia.'
+          : '📸 Todavía no recibo la imagen del comprobante. Envíamela por favor y con gusto revisamos tu transferencia 🙌',
       });
       return;
     }
@@ -2448,7 +2448,7 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         console.log('[whatsappBotTransferReceipt] datos insuficientes:', { customerName, customerEmail, itemsCount: Array.isArray(itemsRaw) ? itemsRaw.length : 'no-array', tieneTempCart: Object.keys(tempCartData).length > 0 });
         res.status(HttpStatusCode.Ok).send({
           success: false,
-          message: 'No pude encontrar una orden pendiente de transferencia asociada a este comprobante. En breve un asesor te ayudará a confirmarla con gusto.',
+          message: '🔍 No pude encontrar una orden pendiente de transferencia asociada a este comprobante. No te preocupes, un asesor pronto te ayudará a confirmarla 💛',
         });
         return;
       }
@@ -2497,7 +2497,7 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         console.log('[whatsappBotTransferReceipt] no se pudieron resolver productos');
         res.status(HttpStatusCode.Ok).send({
           success: false,
-          message: 'No pude procesar los productos de tu orden. Un asesor te ayudará a confirmarla con gusto.',
+          message: '☕ No pude procesar los productos de tu orden. Un asesor te ayudará a confirmarla con gusto 💛',
         });
         return;
       }
@@ -2543,7 +2543,7 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
       console.error('[whatsappBotTransferReceipt] Gemini analysis crashed:', geminiError?.message || geminiError);
     }
     if (!analysis) {
-      analysis = { isTransferReceipt: true, amountMatches: false, destinationMatches: false, imageLooksValid: false, summary: 'Error al analizar comprobante. Pendiente de revisión manual.' };
+      analysis = { isTransferReceipt: true, amountMatches: false, destinationMatches: false, imageLooksValid: false, summary: '⚠️ Error al analizar comprobante. Queda pendiente de revisión manual.' };
     }
     const looksConsistent = Boolean(
       analysis.isTransferReceipt &&
@@ -2567,8 +2567,8 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
     await order.save();
 
     const message = looksConsistent
-      ? `Gracias por enviar tu comprobante. La transferencia de tu pedido ${order.orderNumber} quedó registrada correctamente y el pago fue confirmado. Ha sido un gusto atenderte.`
-      : 'Gracias por enviarnos el comprobante. Detectamos que algo no coincide del todo con el monto, la cuenta o la imagen, así que un asesor dentro de breve se contactará para confirmar la transferencia. Ha sido un gusto atenderte.';
+      ? `✅💛 ¡Gracias por enviar tu comprobante! La transferencia de tu pedido *${order.orderNumber}* quedó registrada y el pago fue confirmado 🎉 Ha sido un gusto atenderte ☕`
+      : '📋💛 Gracias por enviarnos el comprobante. Detectamos una pequeña anomalía en el monto, la cuenta o la imagen, pero no te preocupes — un asesor revisará tu pedido pronto para confirmar la transferencia. Todo está seguro 🔒✨';
 
     if (order.whatsappPhone || order.shippingAddress?.phone) {
       bbcNotificationService.sendWhatsApp(order.whatsappPhone || order.shippingAddress.phone, message).catch((err) =>
@@ -2606,7 +2606,7 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
     console.error('[whatsappBotTransferReceipt] error:', error?.response?.data || error?.message || error);
     res.status(HttpStatusCode.Ok).send({
       success: false,
-      message: 'No pude validar el comprobante en este momento. Un asesor dentro de breve se contactará para confirmar la transferencia. Muchas gracias por tu paciencia.',
+      message: '🔍 No pude validar el comprobante en este momento, pero no te preocupes — un asesor revisará tu pedido pronto. ¡Gracias por tu paciencia! 💛🙌',
     });
   }
 };
@@ -2771,7 +2771,7 @@ Responde EXACTAMENTE:
       amountMatches: false,
       destinationMatches: false,
       imageLooksValid: false,
-      summary: 'No se pudo analizar automáticamente. Pendiente de revisión manual.',
+      summary: '🔍 No se pudo analizar automáticamente. Queda pendiente de revisión manual.',
     };
   }
   return parsed as {
