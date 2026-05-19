@@ -64,13 +64,6 @@ export const bbcNotificationService = {
       const url = `${baseUrl}/api/v2/${projectId}/messages`;
       try {
         const r = await axios.post(url, payload, { headers: authHeaders(), timeout: 20000 });
-        console.log('[BBC] sent WhatsApp:', JSON.stringify({
-          projectId,
-          baseUrl,
-          number,
-          status: r.status,
-          response: r.data,
-        }));
         return;
       } catch (error) {
         lastError = error;

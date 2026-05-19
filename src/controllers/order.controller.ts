@@ -749,33 +749,13 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
     const statusCodeRaw =
       body.statusCode ?? body.status ?? body.transactionStatus ?? query.statusCode;
 
-    console.log('\n🔔 [PayphoneLinkWebhook] incoming');
-    console.log(JSON.stringify({
-      method: req.method,
-      configuredWebhookUrl,
-      headers: {
-        'content-type': req.headers['content-type'],
-        'user-agent': req.headers['user-agent'],
-        'x-forwarded-for': req.headers['x-forwarded-for'],
-      },
-      body,
-      query,
-      extracted: {
-        transactionId,
-        clientTransactionId,
-        statusCodeRaw,
-      },
-    }, null, 2));
-
     if (!clientTransactionId) {
-      console.log('[PayphoneLinkWebhook] missing clientTransactionId — acknowledging without processing');
       res.status(HttpStatusCode.Ok).send({ success: false, message: 'missing clientTransactionId' });
       return;
     }
 
     const order = await Order.findOne({ clientTransactionId: String(clientTransactionId) });
     if (!order) {
-      console.log('[PayphoneLinkWebhook] order not found for clientTransactionId:', String(clientTransactionId));
       res.status(HttpStatusCode.Ok).send({ success: false, message: 'order not found' });
       return;
     }
@@ -793,34 +773,11 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
       stringStatus === 'failed' ||
       stringStatus === 'rejected';
 
-    console.log('[PayphoneLinkWebhook] resolved status:', JSON.stringify({
-      orderNumber: order.orderNumber,
-      clientTransactionId: order.clientTransactionId,
-      numericStatus,
-      stringStatus,
-      isApproved,
-      isFailed,
-      currentPaymentStatus: order.paymentStatus,
-      currentOrderStatus: order.status,
-    }, null, 2));
-
     if (isApproved) {
       order.paymentStatus = 'paid';
       order.status = 'confirmed';
       if (transactionId) order.payphoneTransactionId = String(transactionId);
       await order.save();
-
-      console.log('[PayphoneLinkWebhook] approved order:', JSON.stringify({
-        orderId: String(order._id),
-        orderNumber: order.orderNumber,
-        source: order.source,
-        whatsappPhone: order.whatsappPhone,
-        shippingPhone: order.shippingAddress?.phone,
-        clientTransactionId: order.clientTransactionId,
-        transactionId,
-        numericStatus,
-        stringStatus,
-      }));
 
       // Outbound WhatsApp confirmation — para TODAS las órdenes con teléfono
       bbcNotificationService.sendPaidConfirmation(order).catch(err =>
@@ -838,16 +795,9 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
       order.paymentStatus = 'failed';
       if (transactionId) order.payphoneTransactionId = String(transactionId);
       await order.save();
-      console.log('[PayphoneLinkWebhook] marked order as failed:', JSON.stringify({
-        orderId: String(order._id),
-        orderNumber: order.orderNumber,
-        transactionId,
-      }, null, 2));
     } else {
-      console.log('[PayphoneLinkWebhook] unrecognized status payload, order left unchanged');
     }
 
-    console.log('[PayphoneLinkWebhook] ack response: {"success":true}');
     res.status(HttpStatusCode.Ok).send({ success: true });
   } catch (error) {
     console.error('[PayphoneLinkWebhook] error:', error);
@@ -1330,9 +1280,6 @@ function getLatestUserMessage(history: unknown): string {
   return '';
 }
 
-function logBotDebugBlock(title: string, payload: unknown) {
-  console.log(`\n${title}\n${JSON.stringify(payload, null, 2)}\n`);
-}
 
 function buildFriendlyCheckoutMissingMessage(missing: string[], variant: 'link' | 'payment' = 'payment') {
   const labels: Record<string, string> = {
@@ -1788,27 +1735,19 @@ export const whatsappBotBrain = async (req: Request, res: Response) => {
     const history = normalizedHistory;
     const historyMessages = parseHistoryMessages(req.body?.history);
 
-    logBotDebugBlock('🧠 [brain] incoming', {
-      bodyKeys: Object.keys(req.body || {}),
-      phone,
-      rawMessage,
-      historyMessages: historyMessages.length,
-      historyPreview: history.slice(-1500),
-      rawBody: req.body || {},
-    });
+
 
     // Router endpoint: JSON only. It never writes customer-facing copy.
     const geminiResult = await callGeminiBrain(rawMessage, history, phone);
     const enforcedGeminiResult = geminiResult ? enforceCheckoutRequirements(geminiResult, history, rawMessage) : null;
-    logBotDebugBlock('✨ [brain] geminiResult', geminiResult);
-    logBotDebugBlock('🛡️ [brain] enforcedGeminiResult', enforcedGeminiResult);
+
 
     if (enforcedGeminiResult) {
       const responsePayload = routeFromBrainResult(enforcedGeminiResult, phone, 'gemini');
       if (responsePayload.route === 'checkout' || responsePayload.route === 'transfer') {
         await storeCheckoutContext(phone, (responsePayload.checkoutPayload || responsePayload.transferPayload) as Record<string, any>);
       }
-      logBotDebugBlock('🚀 [brain] response', responsePayload);
+
       res.status(HttpStatusCode.Ok).send(responsePayload);
       return;
     }
@@ -1821,7 +1760,7 @@ export const whatsappBotBrain = async (req: Request, res: Response) => {
     if (heuristicPayload.route === 'checkout' || heuristicPayload.route === 'transfer') {
       await storeCheckoutContext(phone, (heuristicPayload.checkoutPayload || heuristicPayload.transferPayload) as Record<string, any>);
     }
-    logBotDebugBlock('🪄 [brain] heuristicResponse', heuristicPayload);
+
     res.status(HttpStatusCode.Ok).send(heuristicPayload);
   } catch (error: any) {
     console.error('[brain] error:', error?.message || error);
@@ -1838,7 +1777,7 @@ export const whatsappBotBrain = async (req: Request, res: Response) => {
       data: {},
       source: 'heuristic',
     };
-    logBotDebugBlock('🆘 [brain] fallbackResponse', fallbackPayload);
+
     res.status(HttpStatusCode.Ok).send(fallbackPayload);
   }
 };
@@ -1846,13 +1785,11 @@ export const whatsappBotBrain = async (req: Request, res: Response) => {
 export const whatsappBotAssistant = async (req: Request, res: Response) => {
   try {
 
-    console.log('history: ', req.body.history)
     const normalizedHistory = getHistoryText(req.body?.history);
     const rawMessage = String(req.body?.rawMessage || getLatestUserMessage(req.body?.history) || '').trim();
     const phone = String(req.body?.phone || '').replace(/[^0-9+]/g, '');
     const history = normalizedHistory;
 
-    console.log('[assistant] historyMessages:', parseHistoryMessages(req.body?.history).length, 'rawMessagePresent:', Boolean(rawMessage), 'bodyKeys:', Object.keys(req.body || {}));
 
     const geminiResult = await callGeminiBrain(rawMessage, history, phone);
     const enforcedGeminiResult = geminiResult ? enforceCheckoutRequirements(geminiResult, history, rawMessage) : null;
@@ -2210,12 +2147,9 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
 
 export const whatsappBotTransferReceipt = async (req: Request, res: Response) => {
   try {
-    console.log('req.body: ', req.body)
     const input = req.method === 'GET' ? req.query : req.body;
     const raw = input || {};
 
-    console.log('[whatsappBotTransferReceipt] ALL input keys:', Object.keys(raw));
-    console.log('[whatsappBotTransferReceipt] raw input:', JSON.stringify(raw).slice(0, 500));
 
     // Aceptar múltiples nombres de campo para la imagen
     const urlTempFile = String(
@@ -2273,26 +2207,12 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
       // Try to extract order number (SDV-XXXXXXX) from the FULL conversation
       const orderNumMatch = extractedFromHistoryFull.match(/\b(SDV-[A-Z0-9]+)\b/i);
       if (orderNumMatch) orderNumberFromHistory = orderNumMatch[1].toUpperCase();
-
-      console.log('[whatsappBotTransferReceipt] history extracted:', {
-        userMessagesLength: userMessagesText.length,
-        extractedFromHistory,
-        orderNumberFromHistory: orderNumberFromHistory || null,
-      });
     }
 
     // ── Use history-extracted data as fallback ────────────────────────────────
     if (!phone && extractedFromHistory.phone) {
       phone = normalizeWhatsappPhone(extractedFromHistory.phone);
     }
-
-    console.log('[whatsappBotTransferReceipt] extracted:', {
-      orderId: orderId || null,
-      urlTempFile: urlTempFile ? `${urlTempFile.slice(0, 80)}...` : null,
-      phone: phone || null,
-      aiImage: aiImage ? `${String(aiImage).slice(0, 150)}...` : null,
-      hasHistory: Boolean(userMessagesText),
-    });
 
     if (!urlTempFile) {
       res.status(HttpStatusCode.Ok).send({
@@ -2308,13 +2228,6 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
     let historyExtracted: Partial<ITempCartData> = {};
     if (userMessagesText) {
       historyExtracted = extractFromMessage(userMessagesText);
-      console.log('[whatsappBotTransferReceipt] extracted from history:', {
-        name: historyExtracted.customerName,
-        email: historyExtracted.customerEmail,
-        identification: historyExtracted.identificationNumber,
-        products: historyExtracted.productDescription,
-        phone: historyExtracted.phone,
-      });
     }
 
     // ── Order search (order ALWAYS exists from whatsappBotTransfer) ──────────
@@ -2327,9 +2240,6 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         order = await Order.findOne({
           user: userByEmail._id, paymentMethod: 'transfer',
         }).sort({ createdAt: -1 });
-        console.log('[whatsappBotTransferReceipt] search by email:', extractedFromHistory.email, order ? 'found' : 'user found but no matching order');
-      } else {
-        console.log('[whatsappBotTransferReceipt] search by email: user not found for', extractedFromHistory.email);
       }
     }
 
@@ -2338,7 +2248,6 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         identificationNumber: historyExtracted.identificationNumber,
         paymentMethod: 'transfer',
       }).sort({ createdAt: -1 });
-      console.log('[whatsappBotTransferReceipt] search by identificationNumber:', historyExtracted.identificationNumber, order ? 'found' : 'not found');
     }
 
     if (!order && phone) {
@@ -2352,7 +2261,6 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
           { 'shippingAddress.phone': String(phone) },
         ],
       }).sort({ createdAt: -1 });
-      console.log('[whatsappBotTransferReceipt] search by phone:', phone, order ? 'found' : 'not found');
     }
 
     if (!order && historyExtracted.customerName) {
@@ -2360,12 +2268,10 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         'shippingAddress.name': { $regex: historyExtracted.customerName.split(' ')[0], $options: 'i' },
         paymentMethod: 'transfer',
       }).sort({ createdAt: -1 });
-      console.log('[whatsappBotTransferReceipt] search by name:', historyExtracted.customerName, order ? 'found' : 'not found');
     }
 
     // ── If STILL not found, auto-create with history data ────────────────────
     if (!order) {
-      console.log('[whatsappBotTransferReceipt] orden no encontrada — auto-creando con datos del historial');
       if (!historyExtracted.customerEmail || !historyExtracted.customerName) {
         res.status(HttpStatusCode.Ok).send({
           success: false,
@@ -2434,7 +2340,6 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         emailService.sendOrderStatusUpdate(user.email, user.name, String(order._id), order.orderNumber, order.status, 'Hemos recibido tu comprobante de transferencia. Lo estamos revisando.').catch(() => { });
       }
 
-      console.log('[whatsappBotTransferReceipt] orden auto-creada con emails:', { orderId: String(order._id), orderNumber: order.orderNumber, total: order.total, isNewGuest });
     }
 
     const upload = await cloudinaryService.uploadFromUrl(String(urlTempFile), 'sorbito-de-verdad/payment-receipts');
@@ -2480,15 +2385,6 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         console.error('[whatsappBotTransferReceipt] sendWhatsApp error:', err)
       );
     }
-
-    console.log('[whatsappBotTransferReceipt] resultado validación:', {
-      orderNumber: order.orderNumber,
-      looksConsistent,
-      detectedAmount: analysis.detectedAmount,
-      detectedDestination: analysis.detectedDestination,
-      summary: analysis.summary,
-      aiImage: aiImage ? `${String(aiImage).slice(0, 200)}...` : null,
-    });
 
     res.status(HttpStatusCode.Ok).send({
       success: looksConsistent,
@@ -2647,7 +2543,6 @@ Responde EXACTAMENTE:
   );
 
   const text = response.data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || '').join('') || '';
-  console.log('[callGeminiReceiptAnalysis] raw response:', text.slice(0, 800));
 
   // Helper: extraer JSON incluso si está envuelto en ```json ... ``` o truncado
   function extractJSON(raw: string): any {
@@ -2730,16 +2625,7 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
     const checkoutHistoryText = getCheckoutHistoryText(rawBody);
     const checkoutLatestUserMessage = getCheckoutLatestUserMessage(rawBody);
 
-    logBotDebugBlock('🧾 [checkout] incoming', {
-      bodyKeys: Object.keys(rawBody || {}),
-      isFromBot,
-      rawMessage: rawBody.rawMessage || null,
-      phone: rawBody.phone || null,
-      hasCheckoutPayload: Boolean(rawBody.checkoutPayload),
-      hasData: Boolean(rawBody.data),
-      historyPreview: checkoutHistoryText.slice(-1500),
-      rawBody,
-    });
+
 
     if (!parsed) {
       const normalizedPhone = normalizeWhatsappPhone(String(rawBody.phone || ''));
@@ -2776,12 +2662,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
           shipping: recoveryCart.data?.shippingCost || 0,
           shippingZoneName: recoveryCart.data?.country,
         };
-        logBotDebugBlock('🛟 [checkout] recoveredFromTempCart', {
-          requestedPhone: normalizedPhone || null,
-          phone: recoveryCart.phone,
-          updatedAt: recoveryCart.updatedAt,
-          parsed,
-        });
       }
     }
 
@@ -2792,7 +2672,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       if (true) {
         const phone = String(rawBody.phone || '').replace(/[^0-9+]/g, '');
         const history = checkoutHistoryText;
-        console.log('[checkout] userMsgs:', parseHistoryMessages(rawBody.history).length, 'totalLen:', history.length, 'rawBody keys:', Object.keys(rawBody));
         let extracted: any = {};
         if (history) {
           extracted = extractFromMessage(history);
@@ -2801,7 +2680,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
         if (history) {
           const aiBrain = await callGeminiBrain(fullText || checkoutLatestUserMessage || 'quiero pagar', history, phone);
           aiExtracted = mapBrainDataToCheckoutFields(aiBrain?.data);
-          logBotDebugBlock('🤖 [checkout] aiBrain', aiBrain);
         }
         // Also try TempCart cache as backup
         const cart = phone ? await TempCart.findOne({ phone }) : null;
@@ -2840,7 +2718,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
           if (merged.productSubtotal !== undefined) {
             merged.total = (merged.productSubtotal || 0) + (merged.shippingCost || 0);
           }
-          logBotDebugBlock('🧩 [checkout] mergedData', merged);
           const missing: string[] = [];
           if (!merged.customerName) missing.push('nombre');
           if (!merged.customerEmail) missing.push('correo');
@@ -2851,7 +2728,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
           if (!merged.country) missing.push('país');
           if (!merged.productDescription) missing.push('productos');
           if (missing.length) {
-            console.log('[checkout] missing data — asking client:', missing);
             const friendlyMsg = buildFriendlyCheckoutMissingMessage(missing, 'link');
             res.status(HttpStatusCode.Ok).send({ success: false, message: friendlyMsg, _missing: missing });
             return;
@@ -2867,7 +2743,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
               items: [{ name: merged.productDescription, price: merged.productSubtotal, quantity: 1 }],
               shipping: merged.shippingCost || 0,
             };
-            logBotDebugBlock('✅ [checkout] parsedFromHistory', parsed);
           }
         }
       }
@@ -2879,7 +2754,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
     }
 
     const body: any = parsed ? { ...rawBody, ...parsed } : rawBody;
-    logBotDebugBlock('📦 [checkout] finalBody', body);
     if (parsed && rawBody.phone) {
       body.phone = parsed.phone || String(rawBody.phone).replace(/[^0-9+]/g, '');
     }
@@ -3034,14 +2908,7 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
     order.payphoneLinkExpiresAt = expiresAt;
     order.clientTransactionId = clientTransactionId;
 
-    console.log('[whatsappBotCheckout] saving order with link:', JSON.stringify({
-      orderId: String(order._id),
-      orderNumber: order.orderNumber,
-      payphoneLinkUrl: paymentLink,
-      clientTransactionId,
-    }));
     await order.save();
-    console.log('[whatsappBotCheckout] order saved OK');
 
     // Clean TempCart for this phone after successful order
     if (phone) {
@@ -3074,7 +2941,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       },
     };
 
-    console.log('[whatsappBotCheckout] sending response to BBC');
     res.status(HttpStatusCode.Ok).json(responsePayload);
   } catch (error: any) {
     console.error('[whatsappBotCheckout] error:', error?.stack || error?.message || error);
