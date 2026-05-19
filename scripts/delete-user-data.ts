@@ -26,6 +26,9 @@ async function deleteUserData() {
     console.log(`🗑️  Órdenes eliminadas: ${result.deletedCount}`);
   }
 
+  await User.deleteOne({ _id: user._id });
+  console.log(`🗑️  Usuario eliminado: ${user.email}`);
+
   console.log('✅ Datos eliminados exitosamente');
   await mongoose.disconnect();
   process.exit(0);

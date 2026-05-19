@@ -159,7 +159,7 @@ export const getAllOrders = async (req: AuthRequest, res: Response, next: NextFu
     }
 
     // Conteos reales por estado (siempre, sin importar el filtro activo)
-    const allStatuses = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled'];
+    const allStatuses = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'review'];
     const pageSize = parseInt(limit);
     const currentPage = Math.max(1, parseInt(page) || 1);
     const skip = (currentPage - 1) * pageSize;
@@ -970,13 +970,20 @@ function extractFromMessage(message: string): Partial<ITempCartData> {
   const email = m.match(/(?:^|[\s,;:|<>"'(\[])([a-z0-9._+-]+@[a-z0-9-]+\.[a-z0-9.-]+)/i);
   if (email) out.customerEmail = email[1].toLowerCase();
 
-  // Cédula 10 dig or RUC 13 dig (not preceded by + and not too long)
-  const idMatch = m.match(/\b\d{10}(\d{3})?\b/g);
-  if (idMatch) out.identificationNumber = idMatch[0];
-
-  // Phone 10 dig starting with 0 or 9, or +593
+  // Phone 10 dig starting with 0 or 9, or +593 (extract FIRST so we can exclude from ID)
+  let phoneNumber = '';
   const phoneMatch = m.match(/(?:\+?593|0)\d{9}/);
-  if (phoneMatch) out.phone = phoneMatch[0];
+  if (phoneMatch) {
+    phoneNumber = phoneMatch[0];
+    out.phone = phoneNumber;
+  }
+
+  // Cédula 10 dig or RUC 13 dig — must NOT be the phone number
+  const allDigits = m.match(/\b\d{10}(\d{3})?\b/g);
+  if (allDigits) {
+    const cedula = allDigits.find(d => d !== phoneNumber) || allDigits[0];
+    out.identificationNumber = cedula;
+  }
 
   // City + country detection — use word boundary regex to avoid false positives
   for (const rule of SHIPPING_RULES) {
@@ -2297,32 +2304,47 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
       return;
     }
 
-    // ── Order search: orderId > orderNumber > email > phone ───────────────────
-    let order = orderId ? await Order.findById(orderId) : null;
-    if (!order && orderNumberFromHistory) {
-      order = await Order.findOne({ orderNumber: orderNumberFromHistory, paymentMethod: 'transfer' }).sort({ createdAt: -1 });
-      console.log('[whatsappBotTransferReceipt] search by orderNumber:', orderNumberFromHistory, order ? 'found' : 'not found');
+    // ── Extraer datos del historial para búsqueda (solo mensajes de usuario) ─
+    let historyExtracted: Partial<ITempCartData> = {};
+    if (userMessagesText) {
+      historyExtracted = extractFromMessage(userMessagesText);
+      console.log('[whatsappBotTransferReceipt] extracted from history:', {
+        name: historyExtracted.customerName,
+        email: historyExtracted.customerEmail,
+        identification: historyExtracted.identificationNumber,
+        products: historyExtracted.productDescription,
+        phone: historyExtracted.phone,
+      });
     }
+
+    // ── Order search (order ALWAYS exists from whatsappBotTransfer) ──────────
+    // Priority: email > identificationNumber > phone > name
+    let order = orderId ? await Order.findById(orderId) : null;
+
     if (!order && extractedFromHistory.email) {
       const userByEmail = await User.findOne({ email: extractedFromHistory.email });
       if (userByEmail) {
-        order = await Order.findOne({ user: userByEmail._id, paymentMethod: 'transfer', paymentStatus: 'pending' }).sort({ createdAt: -1 });
-        console.log('[whatsappBotTransferReceipt] search by email:', extractedFromHistory.email, order ? 'found' : 'not found');
-        // Also try any status (not just pending) — receipt might arrive after timeout
-        if (!order) {
-          order = await Order.findOne({ user: userByEmail._id, paymentMethod: 'transfer' }).sort({ createdAt: -1 });
-          console.log('[whatsappBotTransferReceipt] search by email (any status):', extractedFromHistory.email, order ? 'found' : 'not found');
-        }
+        order = await Order.findOne({
+          user: userByEmail._id, paymentMethod: 'transfer',
+        }).sort({ createdAt: -1 });
+        console.log('[whatsappBotTransferReceipt] search by email:', extractedFromHistory.email, order ? 'found' : 'user found but no matching order');
       } else {
-        // User might not exist yet — try to find order by email in shippingAddress
-        order = await Order.findOne({ 'shippingAddress.name': { $regex: extractedFromHistory.email.split('@')[0], $options: 'i' }, paymentMethod: 'transfer' }).sort({ createdAt: -1 });
+        console.log('[whatsappBotTransferReceipt] search by email: user not found for', extractedFromHistory.email);
       }
     }
+
+    if (!order && historyExtracted.identificationNumber) {
+      order = await Order.findOne({
+        identificationNumber: historyExtracted.identificationNumber,
+        paymentMethod: 'transfer',
+      }).sort({ createdAt: -1 });
+      console.log('[whatsappBotTransferReceipt] search by identificationNumber:', historyExtracted.identificationNumber, order ? 'found' : 'not found');
+    }
+
     if (!order && phone) {
       const normalized = normalizeWhatsappPhone(String(phone));
       order = await Order.findOne({
         paymentMethod: 'transfer',
-        paymentStatus: 'pending',
         $or: [
           { whatsappPhone: normalized },
           { whatsappPhone: String(phone) },
@@ -2330,209 +2352,89 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
           { 'shippingAddress.phone': String(phone) },
         ],
       }).sort({ createdAt: -1 });
+      console.log('[whatsappBotTransferReceipt] search by phone:', phone, order ? 'found' : 'not found');
     }
-    // ── Last resort: search by customer name from history ─────────────────────
-    if (!order && userMessagesText) {
-      const fromMsg = extractFromMessage(userMessagesText);
-      if (fromMsg.customerName) {
-        order = await Order.findOne({ 'shippingAddress.name': { $regex: fromMsg.customerName, $options: 'i' }, paymentMethod: 'transfer' }).sort({ createdAt: -1 });
-        console.log('[whatsappBotTransferReceipt] search by name:', fromMsg.customerName, order ? 'found' : 'not found');
-      }
+
+    if (!order && historyExtracted.customerName) {
+      order = await Order.findOne({
+        'shippingAddress.name': { $regex: historyExtracted.customerName.split(' ')[0], $options: 'i' },
+        paymentMethod: 'transfer',
+      }).sort({ createdAt: -1 });
+      console.log('[whatsappBotTransferReceipt] search by name:', historyExtracted.customerName, order ? 'found' : 'not found');
     }
-    // ── Auto-crear orden si no existe ─────────────────────────────────────────
+
+    // ── If STILL not found, auto-create with history data ────────────────────
     if (!order) {
-      console.log('[whatsappBotTransferReceipt] orden no encontrada — intentando crear desde los datos disponibles');
-
-      // ── Extraer datos del historial (solo mensajes de usuario) ──────────────
-      let historyName = '';
-      let historyEmail = '';
-      let historyAddress = '';
-      let historyCity = '';
-      let historyCountry = '';
-      let historyProducts = '';
-      let historyIdentification = '';
-      if (userMessagesText) {
-        const extracted = extractFromMessage(userMessagesText);
-        historyName = extracted.customerName || '';
-        historyEmail = extracted.customerEmail || '';
-        historyAddress = extracted.address || '';
-        historyCity = extracted.city || '';
-        historyCountry = extracted.country || '';
-        historyProducts = extracted.productDescription || '';
-        historyIdentification = extracted.identificationNumber || '';
-        console.log('[whatsappBotTransferReceipt] extracted from history:', { historyName, historyEmail, historyProducts });
-      }
-
-      // Intentar recuperar datos desde TempCart (conversación guardada por el brain)
-      let tempCartData: Record<string, any> = {};
-      if (phone) {
-        const cart = await TempCart.findOne({ phone });
-        if (cart?.data) {
-          tempCartData = cart.data as Record<string, any>;
-          console.log('[whatsappBotTransferReceipt] datos recuperados de TempCart:', JSON.stringify(tempCartData).slice(0, 500));
-        }
-      }
-
-      const customerName = String(
-        (raw as any).customerName || (raw as any).name
-        || (raw as any).data?.customerName || (raw as any).data?.name
-        || tempCartData.customerName || tempCartData.name
-        || historyName
-        || ''
-      ).trim();
-      const customerEmail = String(
-        (raw as any).customerEmail || (raw as any).email
-        || (raw as any).data?.customerEmail || (raw as any).data?.email
-        || tempCartData.customerEmail || tempCartData.email
-        || historyEmail
-        || ''
-      ).toLowerCase().trim();
-      const identificationNumber = String(
-        (raw as any).identificationNumber || (raw as any).cedula || (raw as any).id
-        || (raw as any).data?.identificationNumber
-        || tempCartData.identificationNumber || tempCartData.id
-        || historyIdentification
-        || ''
-      );
-      const address = String(
-        (raw as any).address || (raw as any).direccion
-        || (raw as any).data?.address
-        || tempCartData.address
-        || historyAddress
-        || ''
-      );
-      const city = String(
-        (raw as any).city || (raw as any).ciudad
-        || (raw as any).data?.city
-        || tempCartData.city
-        || historyCity
-        || ''
-      );
-      const country = String(
-        (raw as any).country || (raw as any).pais
-        || (raw as any).data?.country
-        || tempCartData.country
-        || historyCountry
-        || ''
-      );
-      const productDescription = String(
-        tempCartData.productDescription || tempCartData.items?.[0]?.name
-        || historyProducts
-        || ''
-      );
-      const productSubtotal = Number(tempCartData.productSubtotal || 0);
-      const productsCount = Number(tempCartData.productsCount || 1);
-
-      const itemsRaw = (
-        (raw as any).items
-        || (raw as any).data?.items
-        || (raw as any).checkoutPayload?.items
-        || (raw as any).transferPayload?.items
-        || (productDescription ? [{ name: productDescription, price: productSubtotal || 25, quantity: productsCount }] : [])
-      );
-
-      const shippingVal = Number(
-        (raw as any).shipping || (raw as any).data?.shipping
-        || tempCartData.shippingCost || 0
-      );
-      const shippingZoneName = String(
-        (raw as any).shippingZoneName || (raw as any).data?.shippingZoneName
-        || tempCartData.shippingZoneName || country || ''
-      );
-      const mapsUrl = String(
-        (raw as any).mapsUrl || (raw as any).data?.mapsUrl
-        || tempCartData.mapsUrl || ''
-      );
-
-      if (!customerEmail || !customerName || !Array.isArray(itemsRaw) || !itemsRaw.length) {
-        console.log('[whatsappBotTransferReceipt] datos insuficientes:', { customerName, customerEmail, itemsCount: Array.isArray(itemsRaw) ? itemsRaw.length : 'no-array', tieneTempCart: Object.keys(tempCartData).length > 0 });
+      console.log('[whatsappBotTransferReceipt] orden no encontrada — auto-creando con datos del historial');
+      if (!historyExtracted.customerEmail || !historyExtracted.customerName) {
         res.status(HttpStatusCode.Ok).send({
           success: false,
-          message: '🔍 No pude encontrar una orden pendiente de transferencia asociada a este comprobante. No te preocupes, un asesor pronto te ayudará a confirmarla 💛',
+          message: '🔍 No pude encontrar una orden pendiente de transferencia. Un asesor te contactará pronto 💛',
         });
         return;
       }
 
-      // Crear o buscar usuario
-      let user = await User.findOne({ email: customerEmail });
+      let isNewGuest = false;
+      let tempPassword: string | undefined;
+      let user = await User.findOne({ email: historyExtracted.customerEmail! });
       if (!user) {
-        const tempPassword = Math.random().toString(36).slice(-6) + Math.random().toString(36).slice(-4).toUpperCase() + '!';
-        user = await User.create({
-          name: customerName,
-          email: customerEmail,
-          password: tempPassword,
-          role: 'customer',
-        });
+        isNewGuest = true;
+        const rawPwd = Math.random().toString(36).slice(-6) + Math.random().toString(36).slice(-4).toUpperCase() + '!';
+        tempPassword = rawPwd;
+        const hashed = await bcrypt.hash(rawPwd, 10);
+        user = await User.create({ name: historyExtracted.customerName!, email: historyExtracted.customerEmail!, password: hashed, role: 'customer', accountType: 'customer' });
       }
 
-      // Resolver productos
-      const activeProducts = await Product.find({ isActive: true });
-      const fallback = activeProducts[0];
-      const resolvedItems: any[] = [];
-      let subtotal = 0;
+      // Use extracted phone (if available) or the one from history
+      const orderPhone = phone || historyExtracted.phone || '';
+      const subtotal = historyExtracted.productSubtotal || 25;
+      const shippingCost = historyExtracted.shippingCost || 0;
 
-      for (const item of (Array.isArray(itemsRaw) ? itemsRaw : [])) {
-        const qty = Number(item.quantity) || 1;
-        let product: any = null;
-        if (item.product) {
-          product = await Product.findById(item.product);
-        } else if (activeProducts.length) {
-          const pn = String(item.name || '').toLowerCase();
-          product = activeProducts.find(p => pn.includes(p.name.toLowerCase())) || fallback;
-        }
-        if (!product) continue;
-        const price = Number(item.price) > 0 ? Number(item.price) : product.price;
-        subtotal += price * qty;
-        resolvedItems.push({
-          product: product._id,
-          name: item.name || product.name,
-          image: product.mainImage || '',
-          quantity: qty,
-          price,
-          ...(item.sizeName && { sizeName: item.sizeName }),
-        });
-      }
-
-      if (!resolvedItems.length) {
-        console.log('[whatsappBotTransferReceipt] no se pudieron resolver productos');
-        res.status(HttpStatusCode.Ok).send({
-          success: false,
-          message: '☕ No pude procesar los productos de tu orden. Un asesor te ayudará a confirmarla con gusto 💛',
-        });
+      // Resolve product from description (e.g. "Colección Completa", "Taza Boscán")
+      const allActiveProducts = await Product.find({ isActive: true });
+      const productDesc = (historyExtracted.productDescription || '').toLowerCase();
+      let resolvedProduct = allActiveProducts.find(p => productDesc.includes(p.name.toLowerCase()));
+      if (!resolvedProduct) resolvedProduct = allActiveProducts[0];
+      if (!resolvedProduct) {
+        res.status(HttpStatusCode.Ok).send({ success: false, message: '☕ No hay productos activos. Un asesor te ayudará 💛' });
         return;
       }
 
       order = await Order.create({
         user: user._id,
-        items: resolvedItems,
-        subtotal,
-        shipping: shippingVal,
-        tax: 0,
-        total: subtotal + shippingVal,
+        items: [{
+          product: resolvedProduct._id,
+          name: historyExtracted.productDescription || resolvedProduct.name,
+          image: resolvedProduct.mainImage || '',
+          quantity: historyExtracted.productsCount || 1,
+          price: subtotal,
+        }],
+        subtotal, shipping: shippingCost, tax: 0, total: subtotal + shippingCost,
         shippingAddress: {
-          name: customerName,
-          phone: phone || '',
-          street: address,
-          city: city || 'Por confirmar',
-          country: country || 'Por confirmar',
-          ...(mapsUrl && { mapsUrl }),
+          name: historyExtracted.customerName!,
+          phone: orderPhone,
+          street: historyExtracted.address || 'Por confirmar',
+          city: historyExtracted.city || 'Por confirmar',
+          country: historyExtracted.country || 'Por confirmar',
         },
-        paymentMethod: 'transfer',
-        paymentStatus: 'pending',
-        source: 'whatsapp_bot',
-        whatsappPhone: phone || '',
-        ...(identificationNumber && { identificationNumber }),
-        transferVerification: {
-          status: 'pending_review',
-          summary: 'Pendiente de comprobante de transferencia',
-        },
+        paymentMethod: 'transfer', paymentStatus: 'pending',
+        source: 'whatsapp_bot', whatsappPhone: orderPhone,
+        ...(historyExtracted.identificationNumber && { identificationNumber: historyExtracted.identificationNumber }),
+        ...(isNewGuest && tempPassword && { guestTempPassword: tempPassword }),
+        transferVerification: { status: 'pending_review', summary: 'Pendiente de comprobante de transferencia' },
       });
 
-      console.log('[whatsappBotTransferReceipt] orden auto-creada:', {
-        orderId: String(order._id),
-        orderNumber: order.orderNumber,
-        total: order.total,
-      });
+      // ── Send emails (same as web checkout) ────────────────────────────────
+      emailService.sendOrderConfirmation(user.email, user.name, String(order._id), order.total).catch(() => { });
+      if (isNewGuest && tempPassword) {
+        emailService.sendGuestAccountCreated(user.email, user.name, tempPassword).catch(() => { });
+        Order.findByIdAndUpdate(order._id, { $unset: { guestTempPassword: 1 } }).catch(() => { });
+      } else {
+        // Existing user — send notification about receipt being reviewed
+        emailService.sendOrderStatusUpdate(user.email, user.name, String(order._id), order.orderNumber, order.status, 'Hemos recibido tu comprobante de transferencia. Lo estamos revisando.').catch(() => { });
+      }
+
+      console.log('[whatsappBotTransferReceipt] orden auto-creada con emails:', { orderId: String(order._id), orderNumber: order.orderNumber, total: order.total, isNewGuest });
     }
 
     const upload = await cloudinaryService.uploadFromUrl(String(urlTempFile), 'sorbito-de-verdad/payment-receipts');
@@ -2563,6 +2465,9 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
     if (looksConsistent) {
       order.paymentStatus = 'paid';
       order.status = 'confirmed';
+    } else {
+      // Si la orden estaba cancelada pero se subió un comprobante, la reactivamos
+      if (order.status === 'cancelled' || order.status === 'pending') order.status = 'review';
     }
     await order.save();
 
@@ -3191,13 +3096,21 @@ function extractPhoneOrEmail(text: string): { phone?: string; email?: string } {
   const emailMatch = t.match(/([a-z0-9._+-]+@[a-z0-9-]+\.[a-z0-9.-]+)/i);
   if (emailMatch) result.email = emailMatch[1].toLowerCase();
 
-  // Phone: +593, 09, 0 seguido de 9 dígitos, o 9 dígitos
-  const phoneMatch = t.match(/(?:\+?593)?\s*0?\d{9,10}/);
-  if (phoneMatch) {
-    let p = phoneMatch[0].replace(/[^0-9+]/g, '');
-    if (p.startsWith('+')) p = p.slice(1);
+  // Phone: SOLO números que empiezan con 09 (celular Ecuador) o +593
+  // NO debe coincidir con cédulas (10 dígitos que empiezan con 01-24, 30, 50, etc.)
+  // Celular Ecuador: 09 + 8 dígitos = 10 dígitos
+  // Celular internacional: +593 + 9 dígitos
+  const cellMatch = t.match(/\b09\d{8}\b/);
+  if (cellMatch) {
+    let p = cellMatch[0].replace(/[^0-9+]/g, '');
     if (p.length === 10 && p.startsWith('0')) p = '593' + p.slice(1);
-    if (p.length >= 10) result.phone = p;
+    result.phone = p;
+  }
+  if (!result.phone) {
+    const intlMatch = t.match(/\b\+593\d{9}\b/);
+    if (intlMatch) {
+      result.phone = intlMatch[0].replace(/[^0-9+]/g, '');
+    }
   }
 
   return result;

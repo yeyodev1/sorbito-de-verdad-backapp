@@ -13,6 +13,7 @@
     "create-owner": "ts-node-dev --transpile-only src/seeds/create-owner.ts",
     "upload-images": "ts-node-dev --transpile-only src/seeds/upload-images.ts",
     "seed-zones": "ts-node-dev --transpile-only src/seeds/seed-shipping-zones.ts",
+    "seed-test": "ts-node-dev --transpile-only src/seeds/seed-test-data.ts",
     "delete-user-data": "ts-node-dev --transpile-only scripts/delete-user-data.ts"
   },
   "dependencies": {
