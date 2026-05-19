@@ -20,11 +20,11 @@ function authHeaders() {
   };
 }
 
-function getBaseUrls() {
-  return [
-    process.env.BBC_BASE_URL || 'https://www.builderbot.cloud',
-    'https://app.builderbot.cloud',
-  ];
+function getBaseUrls(): string[] {
+  const primary = process.env.BBC_BASE_URL || 'https://app.builderbot.cloud';
+  return primary === 'https://app.builderbot.cloud'
+    ? ['https://app.builderbot.cloud']
+    : [primary, 'https://app.builderbot.cloud'];
 }
 
 function logErr(ctx: string, error: unknown) {

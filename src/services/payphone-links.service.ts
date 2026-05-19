@@ -40,6 +40,8 @@ export interface CreatePaymentLinkParams {
   reference: string;
   clientTransactionId: string;
   expireInHours?: number;
+  urlRedirect?: string; // URL de redirección post-pago (Payphone envía webhook por separado)
+  webhookUrl?: string;  // URL de notificación externa para este link específico
 }
 
 export interface CreatePaymentLinkResult {
@@ -59,7 +61,7 @@ export const payphoneLinksService = {
 
     const expireInHours = params.expireInHours ?? 24;
 
-    const payload = {
+    const payload: Record<string, unknown> = {
       amount: params.amountCents,
       amountWithTax: 0,
       amountWithoutTax: params.amountWithoutTaxCents,
@@ -73,6 +75,16 @@ export const payphoneLinksService = {
       oneTime: true,
       expireIn: expireInHours,
     };
+
+    // Payphone redirige al usuario aquí después del pago exitoso
+    if (params.urlRedirect) {
+      payload.urlRedirect = params.urlRedirect;
+    }
+
+    // Webhook específico para este link (si se requiere, además de la Notificación Externa)
+    if (params.webhookUrl) {
+      payload.urlWebhook = params.webhookUrl;
+    }
 
     console.log('[PayPhoneLinks] payload:', JSON.stringify(payload));
 

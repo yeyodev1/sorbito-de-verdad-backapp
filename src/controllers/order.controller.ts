@@ -697,6 +697,11 @@ export const createPayphoneLink = async (req: Request, res: Response, next: Next
 
     const clientTransactionId = order.clientTransactionId || buildClientTransactionId(order.orderNumber);
 
+    const webhookBase = process.env.WEBHOOK_PUBLIC_BASE || '';
+    const urlRedirect = webhookBase
+      ? `${webhookBase}/api/webhook/payphone-link`
+      : undefined;
+
     const { paymentLink, expiresAt } = await payphoneLinksService.createPaymentLink({
       amountCents,
       taxCents,
@@ -704,6 +709,8 @@ export const createPayphoneLink = async (req: Request, res: Response, next: Next
       reference: `Orden ${order.orderNumber}`,
       clientTransactionId,
       expireInHours: 24,
+      urlRedirect,
+      webhookUrl: urlRedirect,
     });
 
     order.payphoneLinkUrl = paymentLink;
@@ -815,14 +822,10 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
         stringStatus,
       }));
 
-      // Outbound WhatsApp confirmation
-      if (order.source === 'whatsapp_bot') {
-        bbcNotificationService.sendPaidConfirmation(order).catch(err =>
-          console.error('[PayphoneLinkWebhook] sendPaidConfirmation error:', err)
-        );
-      } else {
-        console.log('[PayphoneLinkWebhook] skip WhatsApp confirmation because source is not whatsapp_bot:', order.source);
-      }
+      // Outbound WhatsApp confirmation — para TODAS las órdenes con teléfono
+      bbcNotificationService.sendPaidConfirmation(order).catch(err =>
+        console.error('[PayphoneLinkWebhook] sendPaidConfirmation error:', err)
+      );
 
       // Email confirmation (best-effort)
       try {
@@ -2711,6 +2714,11 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
     const taxCents = 0;
     const amountWithoutTaxCents = amountCents;
 
+    const webhookBase = process.env.WEBHOOK_PUBLIC_BASE || '';
+    const urlRedirect = webhookBase
+      ? `${webhookBase}/api/webhook/payphone-link`
+      : undefined;
+
     const { paymentLink, expiresAt } = await payphoneLinksService.createPaymentLink({
       amountCents,
       taxCents,
@@ -2718,12 +2726,22 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       reference: `Orden ${order.orderNumber}`,
       clientTransactionId,
       expireInHours: 24,
+      urlRedirect,
+      webhookUrl: urlRedirect,
     });
 
     order.payphoneLinkUrl = paymentLink;
     order.payphoneLinkExpiresAt = expiresAt;
     order.clientTransactionId = clientTransactionId;
+
+    console.log('[whatsappBotCheckout] saving order with link:', JSON.stringify({
+      orderId: String(order._id),
+      orderNumber: order.orderNumber,
+      payphoneLinkUrl: paymentLink,
+      clientTransactionId,
+    }));
     await order.save();
+    console.log('[whatsappBotCheckout] order saved OK');
 
     // Clean TempCart for this phone after successful order
     if (phone) {
@@ -2741,7 +2759,7 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       `⏰ Link válido por 24h\n` +
       `📲 En cuanto confirmes el pago te aviso por aquí ☕✨`;
 
-    res.status(HttpStatusCode.Created).send({
+    const responsePayload = {
       success: true,
       message,
       paymentLink,
@@ -2754,7 +2772,18 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
         whatsappPhone: order.whatsappPhone,
         clientTransactionId: order.clientTransactionId,
       },
-    });
+    };
+
+    // Send WhatsApp directamente al usuario con el link de pago
+    const targetPhone = phone || rawBody?.phone || order.whatsappPhone;
+    if (targetPhone) {
+      bbcNotificationService.sendWhatsApp(targetPhone, message).catch(err =>
+        console.error('[whatsappBotCheckout] sendWhatsApp error:', err)
+      );
+    }
+
+    console.log('[whatsappBotCheckout] sending response to BBC');
+    res.status(HttpStatusCode.Ok).json(responsePayload);
   } catch (error: any) {
     console.error('[whatsappBotCheckout] error:', error?.stack || error?.message || error);
     const detail = error?.response?.data ? JSON.stringify(error.response.data).slice(0, 200) : (error?.message || 'unknown');
