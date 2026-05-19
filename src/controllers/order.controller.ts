@@ -1158,7 +1158,7 @@ async function buildShippingText(): Promise<string> {
     '\n\n━━━━━━━━━━━━━━━━━━━━━\n✨ Dime de qué país/ciudad escribes ☕';
 }
 
-function detectIntent(lastMsg: string, history: string): 'catalog' | 'shipping' | 'checkout' | 'chat' {
+function detectIntent(lastMsg: string, history: string): BrainResponse['intent'] {
   const l = (lastMsg || '').toLowerCase();
   // Catalog: explicit catalog/products request
   if (/\b(cat[aá]logo|productos|qu[eé]\s+venden|qu[eé]\s+tienen|qu[eé]\s+modelos|tazas\s+disponibles|mostr[aá]rme|ver\s+(?:opciones|tazas|catalogo|productos|fotos|im[aá]genes)|ense[ñn]ar|opciones\s+disponibles)\b/i.test(l)) {
@@ -1178,12 +1178,16 @@ function detectIntent(lastMsg: string, history: string): 'catalog' | 'shipping' 
   if (/\b(quiero\s+pagar|finalizar\s+(?:el\s+)?pedido|generar\s+link|comprar\s+ya)\b/i.test(l)) {
     return 'checkout';
   }
+  // Search order: consultar estado de pedido
+  if (/\b(consultar\s+pedido|estado\s+(?:de\s+)?(?:mi\s+)?pedido|rastrear|track(?:ing)?\s+order|d[oó]nde\s+(?:est[aá]|va)\s+(?:mi\s+)?pedido|c[uú]al\s+es\s+el\s+estado|qu[eé]\s+pas[oó]\s+con\s+mi\s+(?:pedido|orden)|search_order|buscar\s+(?:mi\s+)?(?:pedido|orden)|ver\s+(?:mi\s+)?pedido|pedido\s+(\d+|SDV))\b/i.test(l)) {
+    return 'search_order';
+  }
   return 'chat';
 }
 
 interface BrainResponse {
   reply: string;
-  intent: 'catalog' | 'shipping' | 'checkout' | 'transfer' | 'chat';
+  intent: 'catalog' | 'shipping' | 'checkout' | 'transfer' | 'search_order' | 'chat';
   data: {
     name?: string | null;
     firstName?: string | null;
@@ -1205,7 +1209,7 @@ interface BrainResponse {
   missingData?: string[];
 }
 
-type BotRoute = 'catalog' | 'shipping' | 'checkout' | 'transfer' | 'conversation';
+type BotRoute = 'catalog' | 'shipping' | 'checkout' | 'transfer' | 'search_order' | 'conversation';
 
 interface BotDecision {
   success: true;
@@ -1529,6 +1533,7 @@ function routeFromBrainResult(result: BrainResponse, fallbackPhone: string, sour
   let route: BotRoute = 'conversation';
   if (result.intent === 'catalog') route = 'catalog';
   if (result.intent === 'shipping') route = 'shipping';
+  if (result.intent === 'search_order') route = 'search_order';
   if (result.readyToCheckout && result.data?.paymentMethod === 'transfer') route = 'transfer';
   if (result.readyToCheckout && result.data?.paymentMethod === 'payphone') route = 'checkout';
 
@@ -1537,6 +1542,7 @@ function routeFromBrainResult(result: BrainResponse, fallbackPhone: string, sour
     shipping: '/api/orders/whatsapp-bot/shipping-info',
     checkout: '/api/orders/whatsapp-bot/checkout',
     transfer: '/api/orders/whatsapp-bot/transfer',
+    search_order: '/api/orders/whatsapp-bot/search-order',
     conversation: '/api/orders/whatsapp-bot/assistant',
   };
 
@@ -1633,12 +1639,13 @@ INTENTS:
 - "shipping": cliente pregunta costos envío, delivery, a dónde envían, tiempos
 - "transfer": cliente dice que quiere pagar por transferencia bancaria
 - "checkout": cliente confirma su compra con "sí", "confirmo", "ok", "pagar", "listo", "vamos", "dale", etc. — Y previamente recibió un resumen del pedido
+- "search_order": cliente quiere saber el estado de su pedido, rastrear, tracking, consultar, "dónde está mi pedido", "cómo va mi pedido", "ver mi pedido"
 - "chat": cualquier otra cosa (saludos, preguntas, selección de productos, dar datos)
 
 CRÍTICO — REGLAS PARA readyToCheckout:
 - readyToCheckout=true SOLO si están completos los 11 datos mínimos, incluyendo producto(s), Y en el historial aparece un link de Google Maps, Y ya está claro si pagará con tarjeta/link (paymentMethod=payphone) o transferencia (paymentMethod=transfer), Y el cliente ya dijo que quiere comprar/pagar/confirmar o acaba de completar el último dato solicitado.
 - Si falta algún dato, readyToCheckout=false y missingData lista qué falta en español ("nombre", "apellido", "correo", "teléfono", "cédula", "dirección", "ciudad", "país", "productos", "ubicación Google Maps", "método de pago")
-- Si intent es catalog/shipping/chat (no confirmación), readyToCheckout=false
+- Si intent es catalog/shipping/search_order/chat (no confirmación), readyToCheckout=false
 - Si el cliente quiere ver productos, intent="catalog" y reply="".
 - Si el cliente pregunta envío, intent="shipping" y reply="".
 - Si el cliente elige transferencia, intent="transfer".
@@ -1656,12 +1663,13 @@ REPLY según intent:
 - catalog/shipping: deja reply vacío "" — el sistema reemplaza con el listado dinámico
 - checkout + readyToCheckout=true: deja reply vacío "" — el sistema genera link
 - checkout + readyToCheckout=false: reply pide DATO FALTANTE específico con tono Sorbi
+- search_order: deja reply vacío "" — el sistema busca el pedido con los datos que haya (teléfono, email)
 - chat: respuesta conversacional natural pidiendo siguiente paso o el siguiente dato faltante
 
 RESPONDE ESTRICTAMENTE EN JSON, sin texto antes ni después:
 {
   "reply": "texto a enviar al cliente",
-  "intent": "catalog|shipping|checkout|transfer|chat",
+  "intent": "catalog|shipping|checkout|transfer|search_order|chat",
   "data": {
     "name": "Diego Reyes" | null,
     "firstName": "Diego" | null,
@@ -1871,6 +1879,14 @@ export const whatsappBotAssistant = async (req: Request, res: Response) => {
     }
     if (heuristic === 'shipping') {
       res.status(HttpStatusCode.Ok).send({ success: true, message: await buildShippingText(), _intent: 'shipping_heuristic' });
+      return;
+    }
+    if (heuristic === 'search_order') {
+      res.status(HttpStatusCode.Ok).send({
+        success: true,
+        message: '☕💛 Claro, dime tu *número de teléfono* o *correo electrónico* para consultar tu pedido.',
+        _intent: 'search_order_heuristic',
+      });
       return;
     }
 
@@ -2774,14 +2790,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       },
     };
 
-    // Send WhatsApp directamente al usuario con el link de pago
-    const targetPhone = phone || rawBody?.phone || order.whatsappPhone;
-    if (targetPhone) {
-      bbcNotificationService.sendWhatsApp(targetPhone, message).catch(err =>
-        console.error('[whatsappBotCheckout] sendWhatsApp error:', err)
-      );
-    }
-
     console.log('[whatsappBotCheckout] sending response to BBC');
     res.status(HttpStatusCode.Ok).json(responsePayload);
   } catch (error: any) {
@@ -2791,6 +2799,129 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       success: false,
       message: `❌ Hubo un problema procesando tu pedido. Detalle técnico: ${detail.slice(0, 200)}. Por favor intenta de nuevo o escribe AYUDA.`,
       _debug: detail,
+    });
+  }
+};
+
+// ── WhatsApp Bot — Search order by phone/email ──────────────────────────
+function extractPhoneOrEmail(text: string): { phone?: string; email?: string } {
+  const t = String(text || '').trim();
+  const result: { phone?: string; email?: string } = {};
+
+  // Email: busca el primer email en el texto
+  const emailMatch = t.match(/([a-z0-9._+-]+@[a-z0-9-]+\.[a-z0-9.-]+)/i);
+  if (emailMatch) result.email = emailMatch[1].toLowerCase();
+
+  // Phone: +593, 09, 0 seguido de 9 dígitos, o 9 dígitos
+  const phoneMatch = t.match(/(?:\+?593)?\s*0?\d{9,10}/);
+  if (phoneMatch) {
+    let p = phoneMatch[0].replace(/[^0-9+]/g, '');
+    if (p.startsWith('+')) p = p.slice(1);
+    if (p.length === 10 && p.startsWith('0')) p = '593' + p.slice(1);
+    if (p.length >= 10) result.phone = p;
+  }
+
+  return result;
+}
+
+export const whatsappBotSearchOrder = async (req: Request, res: Response) => {
+  try {
+    const body = req.method === 'GET' ? req.query : req.body;
+    const lastMessage = String(body?.lastMessage || body?.message || body?.rawMessage || body?.phone || body?.email || '').trim();
+
+    // Extraer teléfono o email del texto libre
+    const extracted = extractPhoneOrEmail(lastMessage);
+    const phone = extracted.phone || '';
+    const email = extracted.email || '';
+
+    if (!phone && !email) {
+      res.status(HttpStatusCode.Ok).send({
+        success: false,
+        message: '☕💛 Para consultar tu pedido necesito tu *correo electrónico*. ¿Cuál es tu correo?',
+        missingData: ['correo electrónico'],
+      });
+      return;
+    }
+
+    let userQuery: any = {};
+    let orderFilter: any = {};
+
+    if (email) {
+      const user = await User.findOne({ email });
+      if (user) userQuery = { user: user._id };
+    }
+
+    if (phone) {
+      orderFilter.$or = [
+        { whatsappPhone: { $regex: phone.slice(-9) } },
+        { 'shippingAddress.phone': { $regex: phone.slice(-9) } },
+      ];
+    }
+
+    const finalFilter = Object.keys(userQuery).length || Object.keys(orderFilter).length
+      ? { ...userQuery, ...orderFilter }
+      : {};
+
+    const orders = await Order.find(finalFilter)
+      .sort({ createdAt: -1 })
+      .limit(2)
+      .populate('user', 'name email');
+
+    if (!orders.length) {
+      res.status(HttpStatusCode.Ok).send({
+        success: false,
+        message: `🔍 No encontré pedidos con esos datos. ¿Quizás con otro teléfono o correo?`,
+      });
+      return;
+    }
+
+    const orderLines = orders.map((o, i) => {
+      const statusEmoji: Record<string, string> = {
+        pending: '⏳',
+        confirmed: '✅',
+        processing: '🔄',
+        shipped: '📦',
+        delivered: '🎉',
+        cancelled: '❌',
+      };
+      const paymentEmoji: Record<string, string> = {
+        pending: '⏳',
+        paid: '✅',
+        failed: '❌',
+        refunded: '💰',
+      };
+      return (
+        `${i + 1}. *${o.orderNumber}*\n` +
+        `   ${statusEmoji[o.status] || '❓'} Estado: ${o.status}\n` +
+        `   ${paymentEmoji[o.paymentStatus] || '❓'} Pago: ${o.paymentStatus}\n` +
+        `   💰 Total: $${o.total.toFixed(2)}\n` +
+        `   📅 ${new Date(o.createdAt).toLocaleDateString('es-EC')}`
+      );
+    });
+
+    const message =
+      `📋 *Tus pedidos*\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      orderLines.join('\n\n') +
+      `\n\n━━━━━━━━━━━━━━━━━━━━━\n` +
+      `💛 ¿Necesitas ayuda con algún pedido?`;
+
+    res.status(HttpStatusCode.Ok).send({
+      success: true,
+      message,
+      data: orders.map(o => ({
+        orderNumber: o.orderNumber,
+        status: o.status,
+        paymentStatus: o.paymentStatus,
+        total: o.total,
+        createdAt: o.createdAt,
+      })),
+    });
+  } catch (error: any) {
+    console.error('[whatsappBotSearchOrder] error:', error?.message || error);
+    res.status(HttpStatusCode.Ok).send({
+      success: false,
+      message: '❌ Tuve un problema buscando tus pedidos. Intenta de nuevo con tu teléfono o correo.',
     });
   }
 };

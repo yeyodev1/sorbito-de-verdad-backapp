@@ -21,8 +21,9 @@ function routerApi(app: Application) {
   router.use('/shipping-zones', shippingZoneRouter);
 
   // Public webhook — no auth middleware
+  // GET para Notificación Externa y redirect del browser post-pago
   router.get('/webhook/payphone', payphoneWebhook);
-  router.post('/webhook/payphone-link', payphoneLinkWebhook);
+  router.all('/webhook/payphone-link', payphoneLinkWebhook);
 
 }
 
