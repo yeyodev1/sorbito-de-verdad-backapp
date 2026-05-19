@@ -2,10 +2,6 @@ import 'dotenv/config';
 import axios, { AxiosError } from 'axios';
 import type { IOrder } from '../models/Order.model';
 
-// BBC outbound endpoint discovered: https://app.builderbot.cloud/api/v2/{projectId}/messages
-// Header: x-api-builderbot: <apiKey>
-// Body: { messages: { content }, number }
-
 function getProjectId() {
   const p = process.env.BBC_PROJECT_ID || '83457ab6-a0df-4b07-b91f-e0fa8d19d45f';
   if (!p) throw new Error('BBC_PROJECT_ID env var is not set');
@@ -22,6 +18,13 @@ function authHeaders() {
     'x-api-builderbot': getApiKey(),
     'Content-Type': 'application/json',
   };
+}
+
+function getBaseUrls() {
+  return [
+    process.env.BBC_BASE_URL || 'https://www.builderbot.cloud',
+    'https://app.builderbot.cloud',
+  ];
 }
 
 function logErr(ctx: string, error: unknown) {
@@ -50,19 +53,32 @@ function normalizePhone(phone: string): string {
 export const bbcNotificationService = {
   async sendWhatsApp(phone: string, message: string): Promise<void> {
     const projectId = getProjectId();
-    const url = `https://app.builderbot.cloud/api/v2/${projectId}/messages`;
     const number = normalizePhone(phone);
     const payload = {
       messages: { content: message },
       number,
     };
-    try {
-      const r = await axios.post(url, payload, { headers: authHeaders(), timeout: 20000 });
-      console.log('[BBC] sent WhatsApp to', number, '| status:', r.status);
-    } catch (error) {
-      logErr('sendWhatsApp', error);
-      throw error;
+
+    let lastError: unknown = null;
+    for (const baseUrl of getBaseUrls()) {
+      const url = `${baseUrl}/api/v2/${projectId}/messages`;
+      try {
+        const r = await axios.post(url, payload, { headers: authHeaders(), timeout: 20000 });
+        console.log('[BBC] sent WhatsApp:', JSON.stringify({
+          projectId,
+          baseUrl,
+          number,
+          status: r.status,
+          response: r.data,
+        }));
+        return;
+      } catch (error) {
+        lastError = error;
+        logErr(`sendWhatsApp via ${baseUrl}`, error);
+      }
     }
+
+    throw lastError;
   },
 
   async sendPaidConfirmation(order: IOrder): Promise<void> {

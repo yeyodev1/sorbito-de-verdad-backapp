@@ -732,6 +732,7 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
   try {
     const body = req.body || {};
     const query = req.query || {};
+    const configuredWebhookUrl = `${process.env.WEBHOOK_PUBLIC_BASE || 'WEBHOOK_PUBLIC_BASE_NOT_SET'}/api/webhook/payphone-link`;
 
     // Payphone Notificación Externa shape (best-effort lookup across known field names)
     const transactionId =
@@ -741,15 +742,33 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
     const statusCodeRaw =
       body.statusCode ?? body.status ?? body.transactionStatus ?? query.statusCode;
 
-    console.log('[PayphoneLinkWebhook] body:', JSON.stringify(body), 'query:', JSON.stringify(query));
+    console.log('\n🔔 [PayphoneLinkWebhook] incoming');
+    console.log(JSON.stringify({
+      method: req.method,
+      configuredWebhookUrl,
+      headers: {
+        'content-type': req.headers['content-type'],
+        'user-agent': req.headers['user-agent'],
+        'x-forwarded-for': req.headers['x-forwarded-for'],
+      },
+      body,
+      query,
+      extracted: {
+        transactionId,
+        clientTransactionId,
+        statusCodeRaw,
+      },
+    }, null, 2));
 
     if (!clientTransactionId) {
+      console.log('[PayphoneLinkWebhook] missing clientTransactionId — acknowledging without processing');
       res.status(HttpStatusCode.Ok).send({ success: false, message: 'missing clientTransactionId' });
       return;
     }
 
     const order = await Order.findOne({ clientTransactionId: String(clientTransactionId) });
     if (!order) {
+      console.log('[PayphoneLinkWebhook] order not found for clientTransactionId:', String(clientTransactionId));
       res.status(HttpStatusCode.Ok).send({ success: false, message: 'order not found' });
       return;
     }
@@ -767,17 +786,42 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
       stringStatus === 'failed' ||
       stringStatus === 'rejected';
 
+    console.log('[PayphoneLinkWebhook] resolved status:', JSON.stringify({
+      orderNumber: order.orderNumber,
+      clientTransactionId: order.clientTransactionId,
+      numericStatus,
+      stringStatus,
+      isApproved,
+      isFailed,
+      currentPaymentStatus: order.paymentStatus,
+      currentOrderStatus: order.status,
+    }, null, 2));
+
     if (isApproved) {
       order.paymentStatus = 'paid';
       order.status = 'confirmed';
       if (transactionId) order.payphoneTransactionId = String(transactionId);
       await order.save();
 
+      console.log('[PayphoneLinkWebhook] approved order:', JSON.stringify({
+        orderId: String(order._id),
+        orderNumber: order.orderNumber,
+        source: order.source,
+        whatsappPhone: order.whatsappPhone,
+        shippingPhone: order.shippingAddress?.phone,
+        clientTransactionId: order.clientTransactionId,
+        transactionId,
+        numericStatus,
+        stringStatus,
+      }));
+
       // Outbound WhatsApp confirmation
       if (order.source === 'whatsapp_bot') {
         bbcNotificationService.sendPaidConfirmation(order).catch(err =>
           console.error('[PayphoneLinkWebhook] sendPaidConfirmation error:', err)
         );
+      } else {
+        console.log('[PayphoneLinkWebhook] skip WhatsApp confirmation because source is not whatsapp_bot:', order.source);
       }
 
       // Email confirmation (best-effort)
@@ -791,8 +835,16 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
       order.paymentStatus = 'failed';
       if (transactionId) order.payphoneTransactionId = String(transactionId);
       await order.save();
+      console.log('[PayphoneLinkWebhook] marked order as failed:', JSON.stringify({
+        orderId: String(order._id),
+        orderNumber: order.orderNumber,
+        transactionId,
+      }, null, 2));
+    } else {
+      console.log('[PayphoneLinkWebhook] unrecognized status payload, order left unchanged');
     }
 
+    console.log('[PayphoneLinkWebhook] ack response: {"success":true}');
     res.status(HttpStatusCode.Ok).send({ success: true });
   } catch (error) {
     console.error('[PayphoneLinkWebhook] error:', error);
@@ -2386,35 +2438,45 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       rawBody,
     });
 
-    if (!parsed && !rawBody.rawMessage && !rawBody.history && !rawBody.phone) {
-      const recentCarts = await TempCart.find({
-        updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) },
-      }).sort({ updatedAt: -1 }).limit(2);
+    if (!parsed) {
+      const normalizedPhone = normalizeWhatsappPhone(String(rawBody.phone || ''));
+      let recoveryCart = null;
 
-      if (recentCarts.length) {
-        const latestCart = recentCarts[0];
+      if (normalizedPhone) {
+        recoveryCart = await TempCart.findOne({ phone: normalizedPhone });
+      }
+
+      if (!recoveryCart && !rawBody.rawMessage && !rawBody.history) {
+        const recentCarts = await TempCart.find({
+          updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) },
+        }).sort({ updatedAt: -1 }).limit(2);
+        if (recentCarts.length) recoveryCart = recentCarts[0];
+      }
+
+      if (recoveryCart) {
         parsed = {
-          customerName: latestCart.data?.customerName,
-          customerEmail: latestCart.data?.customerEmail,
-          phone: latestCart.data?.phone || latestCart.phone,
-          identificationNumber: latestCart.data?.identificationNumber,
-          address: latestCart.data?.address,
-          city: latestCart.data?.city,
-          country: latestCart.data?.country,
-          mapsUrl: latestCart.data?.mapsUrl,
-          items: latestCart.data?.productDescription
+          customerName: recoveryCart.data?.customerName,
+          customerEmail: recoveryCart.data?.customerEmail,
+          phone: recoveryCart.data?.phone || recoveryCart.phone,
+          identificationNumber: recoveryCart.data?.identificationNumber,
+          address: recoveryCart.data?.address,
+          city: recoveryCart.data?.city,
+          country: recoveryCart.data?.country,
+          mapsUrl: recoveryCart.data?.mapsUrl,
+          items: recoveryCart.data?.productDescription
             ? [{
-                name: latestCart.data.productDescription,
-                price: latestCart.data.productSubtotal || 0,
-                quantity: latestCart.data.productsCount || 1,
+                name: recoveryCart.data.productDescription,
+                price: recoveryCart.data.productSubtotal || 0,
+                quantity: recoveryCart.data.productsCount || 1,
               }]
             : [],
-          shipping: latestCart.data?.shippingCost || 0,
-          shippingZoneName: latestCart.data?.country,
+          shipping: recoveryCart.data?.shippingCost || 0,
+          shippingZoneName: recoveryCart.data?.country,
         };
         logBotDebugBlock('🛟 [checkout] recoveredFromTempCart', {
-          phone: latestCart.phone,
-          updatedAt: latestCart.updatedAt,
+          requestedPhone: normalizedPhone || null,
+          phone: recoveryCart.phone,
+          updatedAt: recoveryCart.updatedAt,
           parsed,
         });
       }
@@ -2687,6 +2749,11 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       orderId: String(order._id),
       total,
       expiresAt,
+      debug: {
+        source: order.source,
+        whatsappPhone: order.whatsappPhone,
+        clientTransactionId: order.clientTransactionId,
+      },
     });
   } catch (error: any) {
     console.error('[whatsappBotCheckout] error:', error?.stack || error?.message || error);
