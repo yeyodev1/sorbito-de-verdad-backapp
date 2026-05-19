@@ -1861,7 +1861,7 @@ export const whatsappBotAssistant = async (req: Request, res: Response) => {
       res.status(HttpStatusCode.Ok).send({
         success: true,
         message: enforcedGeminiResult.data?.paymentMethod === 'transfer'
-          ? '☕💛 Ya tengo todo listo para darte los datos de transferencia y continuar con tu pedido.'
+          ? buildTransferReadyMessage(enforcedGeminiResult.data)
           : '☕💛 Ya tengo todo listo. Te paso al pago seguro para generar tu link.',
         _intent: enforcedGeminiResult.data?.paymentMethod === 'transfer' ? 'transfer_ready' : 'checkout_ready',
       });
@@ -2203,8 +2203,53 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
 
 export const whatsappBotTransferReceipt = async (req: Request, res: Response) => {
   try {
+    console.log('req.body: ', req.body)
     const input = req.method === 'GET' ? req.query : req.body;
-    const { orderId, urlTempFile, phone } = (input || {}) as Record<string, unknown>;
+    const raw = input || {};
+
+    console.log('[whatsappBotTransferReceipt] ALL input keys:', Object.keys(raw));
+    console.log('[whatsappBotTransferReceipt] raw input:', JSON.stringify(raw).slice(0, 500));
+
+    // Aceptar múltiples nombres de campo para la imagen
+    const urlTempFile = String(
+      (raw as any).urlTempFile
+      || (raw as any).tempFile
+      || (raw as any).fileUrl
+      || (raw as any).imageUrl
+      || (raw as any).mediaUrl
+      || (raw as any).url
+      || (raw as any).data?.urlTempFile
+      || (raw as any).data?.url
+      || (raw as any).data?.imageUrl
+      || (raw as any).data?.mediaUrl
+      || ''
+    ).trim();
+
+    const phone = String(
+      (raw as any).phone
+      || (raw as any).whatsappPhone
+      || (raw as any).telefono
+      || (raw as any).data?.phone
+      || ''
+    ).replace(/[^0-9+]/g, '');
+
+    const orderId = String(
+      (raw as any).orderId
+      || (raw as any).order_id
+      || (raw as any).id
+      || (raw as any).data?.orderId
+      || ''
+    );
+
+    const aiImage = (raw as any).aiImage || (raw as any).data?.aiImage || undefined;
+
+    console.log('[whatsappBotTransferReceipt] extracted:', {
+      orderId: orderId || null,
+      urlTempFile: urlTempFile ? `${urlTempFile.slice(0, 80)}...` : null,
+      phone: phone || null,
+      aiImage: aiImage ? `${String(aiImage).slice(0, 150)}...` : null,
+    });
+
     if (!urlTempFile) {
       res.status(HttpStatusCode.Ok).send({
         success: false,
@@ -2229,16 +2274,176 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         ],
       }).sort({ createdAt: -1 });
     }
+    // ── Auto-crear orden si no existe ─────────────────────────────────────────
     if (!order) {
-      res.status(HttpStatusCode.Ok).send({
-        success: false,
-        message: 'No pude encontrar una orden pendiente de transferencia asociada a este comprobante. En breve un asesor te ayudará a confirmarla con gusto.',
+      console.log('[whatsappBotTransferReceipt] orden no encontrada — intentando crear desde los datos disponibles');
+
+      // Intentar recuperar datos desde TempCart (conversación guardada por el brain)
+      let tempCartData: Record<string, any> = {};
+      if (phone) {
+        const cart = await TempCart.findOne({ phone });
+        if (cart?.data) {
+          tempCartData = cart.data as Record<string, any>;
+          console.log('[whatsappBotTransferReceipt] datos recuperados de TempCart:', JSON.stringify(tempCartData).slice(0, 500));
+        }
+      }
+
+      const customerName = String(
+        (raw as any).customerName || (raw as any).name
+        || (raw as any).data?.customerName || (raw as any).data?.name
+        || tempCartData.customerName || tempCartData.name
+        || ''
+      ).trim();
+      const customerEmail = String(
+        (raw as any).customerEmail || (raw as any).email
+        || (raw as any).data?.customerEmail || (raw as any).data?.email
+        || tempCartData.customerEmail || tempCartData.email
+        || ''
+      ).toLowerCase().trim();
+      const identificationNumber = String(
+        (raw as any).identificationNumber || (raw as any).cedula || (raw as any).id
+        || (raw as any).data?.identificationNumber
+        || tempCartData.identificationNumber || tempCartData.id
+        || ''
+      );
+      const address = String(
+        (raw as any).address || (raw as any).direccion
+        || (raw as any).data?.address
+        || tempCartData.address
+        || ''
+      );
+      const city = String(
+        (raw as any).city || (raw as any).ciudad
+        || (raw as any).data?.city
+        || tempCartData.city
+        || ''
+      );
+      const country = String(
+        (raw as any).country || (raw as any).pais
+        || (raw as any).data?.country
+        || tempCartData.country
+        || ''
+      );
+      const productDescription = String(
+        tempCartData.productDescription || tempCartData.items?.[0]?.name || ''
+      );
+      const productSubtotal = Number(tempCartData.productSubtotal || 0);
+      const productsCount = Number(tempCartData.productsCount || 1);
+
+      const itemsRaw = (
+        (raw as any).items
+        || (raw as any).data?.items
+        || (raw as any).checkoutPayload?.items
+        || (raw as any).transferPayload?.items
+        || (productDescription ? [{ name: productDescription, price: productSubtotal || 25, quantity: productsCount }] : [])
+      );
+
+      const shippingVal = Number(
+        (raw as any).shipping || (raw as any).data?.shipping
+        || tempCartData.shippingCost || 0
+      );
+      const shippingZoneName = String(
+        (raw as any).shippingZoneName || (raw as any).data?.shippingZoneName
+        || tempCartData.shippingZoneName || country || ''
+      );
+      const mapsUrl = String(
+        (raw as any).mapsUrl || (raw as any).data?.mapsUrl
+        || tempCartData.mapsUrl || ''
+      );
+
+      if (!customerEmail || !customerName || !Array.isArray(itemsRaw) || !itemsRaw.length) {
+        console.log('[whatsappBotTransferReceipt] datos insuficientes:', { customerName, customerEmail, itemsCount: Array.isArray(itemsRaw) ? itemsRaw.length : 'no-array', tieneTempCart: Object.keys(tempCartData).length > 0 });
+        res.status(HttpStatusCode.Ok).send({
+          success: false,
+          message: 'No pude encontrar una orden pendiente de transferencia asociada a este comprobante. En breve un asesor te ayudará a confirmarla con gusto.',
+        });
+        return;
+      }
+
+      // Crear o buscar usuario
+      let user = await User.findOne({ email: customerEmail });
+      if (!user) {
+        const tempPassword = Math.random().toString(36).slice(-6) + Math.random().toString(36).slice(-4).toUpperCase() + '!';
+        user = await User.create({
+          name: customerName,
+          email: customerEmail,
+          password: tempPassword,
+          role: 'customer',
+        });
+      }
+
+      // Resolver productos
+      const activeProducts = await Product.find({ isActive: true });
+      const fallback = activeProducts[0];
+      const resolvedItems: any[] = [];
+      let subtotal = 0;
+
+      for (const item of (Array.isArray(itemsRaw) ? itemsRaw : [])) {
+        const qty = Number(item.quantity) || 1;
+        let product: any = null;
+        if (item.product) {
+          product = await Product.findById(item.product);
+        } else if (activeProducts.length) {
+          const pn = String(item.name || '').toLowerCase();
+          product = activeProducts.find(p => pn.includes(p.name.toLowerCase())) || fallback;
+        }
+        if (!product) continue;
+        const price = Number(item.price) > 0 ? Number(item.price) : product.price;
+        subtotal += price * qty;
+        resolvedItems.push({
+          product: product._id,
+          name: item.name || product.name,
+          image: product.mainImage || '',
+          quantity: qty,
+          price,
+          ...(item.sizeName && { sizeName: item.sizeName }),
+        });
+      }
+
+      if (!resolvedItems.length) {
+        console.log('[whatsappBotTransferReceipt] no se pudieron resolver productos');
+        res.status(HttpStatusCode.Ok).send({
+          success: false,
+          message: 'No pude procesar los productos de tu orden. Un asesor te ayudará a confirmarla con gusto.',
+        });
+        return;
+      }
+
+      order = await Order.create({
+        user: user._id,
+        items: resolvedItems,
+        subtotal,
+        shipping: shippingVal,
+        tax: 0,
+        total: subtotal + shippingVal,
+        shippingAddress: {
+          name: customerName,
+          phone: phone || '',
+          street: address,
+          city: city || 'Por confirmar',
+          country: country || 'Por confirmar',
+          ...(mapsUrl && { mapsUrl }),
+        },
+        paymentMethod: 'transfer',
+        paymentStatus: 'pending',
+        source: 'whatsapp_bot',
+        whatsappPhone: phone || '',
+        ...(identificationNumber && { identificationNumber }),
+        transferVerification: {
+          status: 'pending_review',
+          summary: 'Pendiente de comprobante de transferencia',
+        },
       });
-      return;
+
+      console.log('[whatsappBotTransferReceipt] orden auto-creada:', {
+        orderId: String(order._id),
+        orderNumber: order.orderNumber,
+        total: order.total,
+      });
     }
 
     const upload = await cloudinaryService.uploadFromUrl(String(urlTempFile), 'sorbito-de-verdad/payment-receipts');
-    const analysis = await callGeminiReceiptAnalysis(upload.secure_url, order);
+    const analysis = await callGeminiReceiptAnalysis(upload.secure_url, order, aiImage as string | undefined);
     const looksConsistent = Boolean(
       analysis.isTransferReceipt &&
       analysis.amountMatches &&
@@ -2269,6 +2474,15 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
         console.error('[whatsappBotTransferReceipt] sendWhatsApp error:', err)
       );
     }
+
+    console.log('[whatsappBotTransferReceipt] resultado validación:', {
+      orderNumber: order.orderNumber,
+      looksConsistent,
+      detectedAmount: analysis.detectedAmount,
+      detectedDestination: analysis.detectedDestination,
+      summary: analysis.summary,
+      aiImage: aiImage ? `${String(aiImage).slice(0, 200)}...` : null,
+    });
 
     res.status(HttpStatusCode.Ok).send({
       success: looksConsistent,
@@ -2308,6 +2522,39 @@ const FORMAT_HELP =
   '• Qué tacita(s) quieres ☕\n\n' +
   'Apenas tenga todo, te genero tu link de PayPhone al instante ✨';
 
+function buildTransferReadyMessage(data: NonNullable<BrainResponse['data']>): string {
+  const lines: string[] = [];
+  lines.push('☕💛 Ya tengo todo listo para darte los datos de transferencia y continuar con tu pedido.\n');
+
+  const hasProducts = Array.isArray(data.products) && data.products.length > 0;
+  if (hasProducts) {
+    lines.push('*🧾 Resumen de tu pedido:*');
+    for (const p of data.products!) {
+      const size = p.size ? ` (${p.size})` : '';
+      lines.push(`• ${p.name}${size} x${p.qty} — *$${p.price.toFixed(2)}*`);
+    }
+    lines.push('');
+  }
+
+  if (typeof data.subtotal === 'number') {
+    lines.push(`📦 Subtotal: *$${data.subtotal.toFixed(2)}*`);
+  }
+  if (typeof data.shipping === 'number' && data.shipping > 0) {
+    lines.push(`🚚 Envío: *$${data.shipping.toFixed(2)}*`);
+  }
+  if (typeof data.total === 'number') {
+    lines.push(`💰 *Total a transferir: $${data.total.toFixed(2)}*`);
+  }
+
+  lines.push('');
+  lines.push('📋 *Datos para la transferencia:*');
+  lines.push('🏦 *Produbanco* — Cta. Cte. *27059016030*');
+  lines.push('👤 Titular: *Casa de Papel SAS* / RUC 0993385430001\n');
+  lines.push('⚠️ Por favor, verifica bien el número de cuenta antes de transferir. Una vez realizado el pago, envíanos el comprobante para confirmar tu pedido.');
+
+  return lines.join('\n');
+}
+
 const TRANSFER_BANK_TEXT =
   'Produbanco Cta. Cte. 27059016030\n' +
   'Titular: Casa de Papel SAS\n' +
@@ -2329,7 +2576,7 @@ function normalizeWhatsappPhone(phone: string): string {
   return p;
 }
 
-async function callGeminiReceiptAnalysis(imageUrl: string, order: any) {
+async function callGeminiReceiptAnalysis(imageUrl: string, order: any, aiImage?: string) {
   const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!key) throw new Error('GEMINI_API_KEY env var is not set');
 
@@ -2338,7 +2585,9 @@ async function callGeminiReceiptAnalysis(imageUrl: string, order: any) {
   const base64 = Buffer.from(imageResp.data).toString('base64');
   const model = (process.env.GEMINI_MODEL || 'gemini-2.5-flash').replace(/^models\//, '');
 
-  const prompt = `Analiza este comprobante de transferencia bancaria y responde SOLO JSON.
+  const aiContext = aiImage ? `\nEl sistema de mensajería ya pre-analizó la imagen y esto fue lo que detectó:\n${aiImage}\n\nUsa esto como referencia adicional, pero confirma visualmente cada dato mirando la imagen.\n` : '';
+
+  const prompt = `Analiza este comprobante de transferencia bancaria y responde SOLO JSON.${aiContext}
 
 Pedido esperado:
 - orderNumber: ${order.orderNumber}
@@ -2436,10 +2685,10 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
         shippingZoneName: rawBody.data.country,
         items: Array.isArray(rawBody.data.products)
           ? rawBody.data.products.map((product: any) => ({
-              name: `${product.qty || 1} ${product.name}${product.size ? ` ${product.size}` : ''}`,
-              price: product.price || 0,
-              quantity: 1,
-            }))
+            name: `${product.qty || 1} ${product.name}${product.size ? ` ${product.size}` : ''}`,
+            price: product.price || 0,
+            quantity: 1,
+          }))
           : [],
       } : null) ||
       (rawBody.rawMessage ? parseRawMessage(rawBody.rawMessage) : null);
@@ -2484,10 +2733,10 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
           mapsUrl: recoveryCart.data?.mapsUrl,
           items: recoveryCart.data?.productDescription
             ? [{
-                name: recoveryCart.data.productDescription,
-                price: recoveryCart.data.productSubtotal || 0,
-                quantity: recoveryCart.data.productsCount || 1,
-              }]
+              name: recoveryCart.data.productDescription,
+              price: recoveryCart.data.productSubtotal || 0,
+              quantity: recoveryCart.data.productsCount || 1,
+            }]
             : [],
           shipping: recoveryCart.data?.shippingCost || 0,
           shippingZoneName: recoveryCart.data?.country,
