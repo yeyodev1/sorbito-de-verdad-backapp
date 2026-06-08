@@ -1050,7 +1050,6 @@ interface ITempCartData {
   address?: string;
   city?: string;
   country?: string;
-  mapsUrl?: string;
   paymentMethod?: string;
   productDescription?: string;
   productsCount?: number;
@@ -1155,7 +1154,6 @@ interface BrainResponse {
     address?: string | null;
     city?: string | null;
     country?: string | null;
-    mapsUrl?: string | null;
     paymentMethod?: 'payphone' | 'transfer' | null;
     products?: Array<{ name: string; size?: string; qty: number; price: number }>;
     subtotal?: number;
@@ -1291,7 +1289,6 @@ function buildFriendlyCheckoutMissingMessage(missing: string[], variant: 'link' 
     ciudad: '🌆 tu *ciudad*',
     país: '🌍 tu *país*',
     productos: '☕ qué *producto(s)* quieres',
-    'ubicación Google Maps': '📍 tu *ubicación de Google Maps*',
   };
   const itemsText = missing.map((item) => `• ${labels[item] || item}`).join('\n');
   const actionText = variant === 'link' ? 'tu link de pago' : 'el pago';
@@ -1367,7 +1364,6 @@ function mapCheckoutPayloadToParsed(checkoutPayload: Record<string, any> | undef
     address: checkoutPayload.address,
     city: checkoutPayload.city,
     country: checkoutPayload.country,
-    mapsUrl: checkoutPayload.mapsUrl,
     items,
     shipping: checkoutPayload.shipping || 0,
     shippingZoneName: checkoutPayload.shippingZoneName,
@@ -1386,7 +1382,6 @@ function mapCheckoutPayloadToTempCartData(checkoutPayload: Record<string, any> |
     address: checkoutPayload.address,
     city: checkoutPayload.city,
     country: checkoutPayload.country,
-    mapsUrl: checkoutPayload.mapsUrl,
     paymentMethod: checkoutPayload.paymentMethod,
     productDescription: firstItem.name,
     productsCount: firstItem.quantity || undefined,
@@ -1424,18 +1419,11 @@ function buildCheckoutPayload(data: BrainResponse['data'], fallbackPhone: string
     address: data.address,
     city: data.city,
     country: data.country,
-    mapsUrl: data.mapsUrl,
     paymentMethod: data.paymentMethod,
     items: [{ name: productDesc, price: subtotal, quantity: 1 }],
     shipping: data.shipping ?? 0,
     shippingZoneName: data.country || undefined,
   };
-}
-
-function hasGoogleMapsLink(history: unknown): boolean {
-  const text = getHistoryText(history);
-  if (!text) return false;
-  return /(https?:\/\/)?(www\.)?(maps\.app\.goo\.gl|goo\.gl\/maps|google\.[^/\s]+\/maps|maps\.google\.[^/\s]+)/i.test(text);
 }
 
 function inferPaymentMethod(...sources: Array<unknown>): 'payphone' | 'transfer' | null {
@@ -1461,13 +1449,9 @@ function inferPaymentMethod(...sources: Array<unknown>): 'payphone' | 'transfer'
 
 function enforceCheckoutRequirements(result: BrainResponse, history: unknown, rawMessage = ''): BrainResponse {
   const missingData = Array.isArray(result.missingData) ? [...result.missingData] : [];
-  const hasMaps = hasGoogleMapsLink(history);
   const inferredPaymentMethod = inferPaymentMethod(result.data?.paymentMethod, rawMessage, history);
   const hasPaymentMethod = inferredPaymentMethod === 'payphone' || inferredPaymentMethod === 'transfer';
 
-  if (!hasMaps && !missingData.includes('ubicación Google Maps')) {
-    missingData.push('ubicación Google Maps');
-  }
   if (!hasPaymentMethod && !missingData.includes('método de pago')) {
     missingData.push('método de pago');
   }
@@ -1478,7 +1462,7 @@ function enforceCheckoutRequirements(result: BrainResponse, history: unknown, ra
       ...(result.data || {}),
       paymentMethod: inferredPaymentMethod,
     },
-    readyToCheckout: Boolean(result.readyToCheckout && hasMaps && hasPaymentMethod),
+    readyToCheckout: Boolean(result.readyToCheckout && hasPaymentMethod),
     missingData,
   };
 }
@@ -1583,8 +1567,7 @@ DATOS MÍNIMOS para generar link PayPhone:
 7. Ciudad (city)
 8. País (country)
 9. Producto(s) con tamaño (products)
-10. Un link de Google Maps en el historial (mapsUrl)
-11. Método de pago elegido: "payphone" o "transfer" (paymentMethod)
+10. Método de pago elegido: "payphone" o "transfer" (paymentMethod)
 
 TU TAREA: Analiza SIEMPRE el historial + último mensaje. Decide el intent, responde con amabilidad y extrae todos los datos que el cliente haya dado.
 
@@ -1597,8 +1580,8 @@ INTENTS:
 - "chat": cualquier otra cosa (saludos, preguntas, selección de productos, dar datos)
 
 CRÍTICO — REGLAS PARA readyToCheckout:
-- readyToCheckout=true SOLO si están completos los 11 datos mínimos, incluyendo producto(s), Y en el historial aparece un link de Google Maps, Y ya está claro si pagará con tarjeta/link (paymentMethod=payphone) o transferencia (paymentMethod=transfer), Y el cliente ya dijo que quiere comprar/pagar/confirmar o acaba de completar el último dato solicitado.
-- Si falta algún dato, readyToCheckout=false y missingData lista qué falta en español ("nombre", "apellido", "correo", "teléfono", "cédula", "dirección", "ciudad", "país", "productos", "ubicación Google Maps", "método de pago")
+- readyToCheckout=true SOLO si están completos los 10 datos mínimos, incluyendo producto(s), Y ya está claro si pagará con tarjeta/link (paymentMethod=payphone) o transferencia (paymentMethod=transfer), Y el cliente ya dijo que quiere comprar/pagar/confirmar o acaba de completar el último dato solicitado.
+- Si falta algún dato, readyToCheckout=false y missingData lista qué falta en español ("nombre", "apellido", "correo", "teléfono", "cédula", "dirección", "ciudad", "país", "productos", "método de pago")
 - Si intent es catalog/shipping/search_order/chat (no confirmación), readyToCheckout=false
 - Si el cliente quiere ver productos, intent="catalog" y reply="".
 - Si el cliente pregunta envío, intent="shipping" y reply="".
@@ -1612,6 +1595,15 @@ TONO Sorbi (para campo "reply"):
 - NUNCA escales a humano
 - NUNCA inventes productos/precios fuera del catálogo
 - NUNCA digas "ya generé link" — el sistema lo hace si readyToCheckout=true
+
+REGLAS DE DIRECCIÓN Y LOGÍSTICA (OBLIGATORIO):
+- NUNCA pidas ubicación de Google Maps, pin de ubicación, coordenadas, ni link de Maps.
+- Pide SOLO dirección escrita (calle, número, referencia, ciudad, país) en texto.
+- Si el cliente pregunta por horarios, día de entrega, ruta, o cualquier duda de envío/entrega: responde que "la empresa de logística se contactará contigo para coordinar y entregar sin problema". No prometas fechas ni horas.
+
+REGLAS DE TRANSFERENCIA (OBLIGATORIO):
+- El ÚNICO banco es *Produbanco*. NUNCA menciones otro banco. NUNCA digas "varios bancos" ni listes alternativas.
+- Datos exactos: Produbanco, Cta. Cte. 27059016030, Titular: Casa de Papel SAS, RUC 0993385430001.
 
 REPLY según intent:
 - catalog/shipping: deja reply vacío "" — el sistema reemplaza con el listado dinámico
@@ -1634,7 +1626,6 @@ RESPONDE ESTRICTAMENTE EN JSON, sin texto antes ni después:
     "address": "..." | null,
     "city": "..." | null,
     "country": "Ecuador" | null,
-    "mapsUrl": "https://maps.app.goo.gl/..." | null,
     "paymentMethod": "payphone" | "transfer" | null,
     "products": [{"name":"Taza Boscán","size":"XXL","qty":1,"price":49}] | [],
     "subtotal": 49,
@@ -1724,6 +1715,14 @@ PROHIBICIONES:
 - NO digas "ya generé link". El sistema lo hace, no tú.
 - NO escales a humano.
 - NO invites a confirmar SIN tener los 6 datos.
+- NO pidas ubicación de Google Maps, pin, coordenadas, ni link de Maps. Solo dirección escrita.
+
+REGLAS DE LOGÍSTICA:
+- Cualquier duda de envío, horario, día o ruta de entrega → responde: "la empresa de logística se contactará contigo para coordinar y entregar sin problema". No prometas fechas ni horas.
+
+REGLAS DE TRANSFERENCIA:
+- Único banco: *Produbanco*. Nunca menciones otro banco ni alternativas.
+- Datos: Produbanco · Cta. Cte. 27059016030 · Titular Casa de Papel SAS · RUC 0993385430001.
 
 OBJETIVO: capturar los 6 datos, mostrar resumen, esperar afirmación del cliente.`;
 
@@ -1992,7 +1991,6 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
       identificationNumber,
       shippingZoneName,
       shipping: bodyShipping,
-      mapsUrl,
     } = body;
 
     const missing: string[] = [];
@@ -2004,7 +2002,6 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
     if (!address) missing.push('dirección');
     if (!city) missing.push('ciudad');
     if (!country) missing.push('país');
-    if (!mapsUrl) missing.push('ubicación Google Maps');
     if (missing.length) {
       const labels: Record<string, string> = {
         nombre: '🙋 tu *nombre completo*',
@@ -2015,7 +2012,6 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
         ciudad: '🌆 tu *ciudad*',
         país: '🌍 tu *país*',
         productos: '☕ qué *producto(s)* quieres',
-        'ubicación Google Maps': '📍 tu *ubicación de Google Maps*',
       };
       const itemsText = missing.map((item) => `• ${labels[item] || item}`).join('\n');
       const friendlyMsg =
@@ -2107,7 +2103,6 @@ export const whatsappBotTransfer = async (req: Request, res: Response, next: Nex
         street: address,
         city,
         country,
-        mapsUrl,
       },
       paymentMethod: 'transfer',
       paymentStatus: 'pending',
@@ -2610,7 +2605,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
         address: rawBody.data.address,
         city: rawBody.data.city,
         country: rawBody.data.country,
-        mapsUrl: rawBody.data.mapsUrl,
         shipping: rawBody.data.shipping,
         shippingZoneName: rawBody.data.country,
         items: Array.isArray(rawBody.data.products)
@@ -2651,7 +2645,6 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
           address: recoveryCart.data?.address,
           city: recoveryCart.data?.city,
           country: recoveryCart.data?.country,
-          mapsUrl: recoveryCart.data?.mapsUrl,
           items: recoveryCart.data?.productDescription
             ? [{
               name: recoveryCart.data.productDescription,
