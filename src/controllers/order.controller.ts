@@ -1860,6 +1860,26 @@ export const whatsappBotAssistant = async (req: Request, res: Response) => {
       });
       return;
     }
+    if (enforcedGeminiResult?.missingData?.length && !enforcedGeminiResult.reply?.trim()) {
+      const fieldLabels: Record<string, string> = {
+        nombre: 'tu nombre completo',
+        correo: 'tu correo electrónico',
+        teléfono: 'tu número de celular',
+        dirección: 'tu dirección',
+        ciudad: 'tu ciudad',
+        productos: 'los productos que quieres',
+        'cédula': 'tu número de cédula (10 dígitos)',
+        'método de pago': 'cómo quieres pagar (¿tarjeta con PayPhone o transferencia?)',
+      };
+      const items = enforcedGeminiResult.missingData.map(f => fieldLabels[f] || f);
+      const last = items.pop();
+      const message = items.length
+        ? `☕💛 ¡Ya casi! Solo necesito ${items.join(', ')} y ${last}.`
+        : `☕💛 ¡Ya casi! Solo necesito ${last}.`;
+      res.status(HttpStatusCode.Ok).send({ success: true, message, _intent: 'collect_data', missingData: enforcedGeminiResult.missingData });
+      return;
+    }
+
     if (enforcedGeminiResult?.reply && enforcedGeminiResult.reply.trim()) {
       res.status(HttpStatusCode.Ok).send({ success: true, message: enforcedGeminiResult.reply, _intent: enforcedGeminiResult.intent, missingData: enforcedGeminiResult.missingData || [] });
       return;
