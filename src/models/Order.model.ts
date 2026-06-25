@@ -128,32 +128,7 @@ orderSchema.pre('save', function (next) {
   if (!this.orderNumber) {
     this.orderNumber = `SDV-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
   }
-  // Track when paymentStatus changes to 'paid' for auto-notifications
-  this.$locals.sendPaidNotification = this.isModified('paymentStatus') && this.paymentStatus === 'paid';
   next();
-});
-
-orderSchema.post('save', async function (doc) {
-  if (doc.$locals.sendPaidNotification) {
-    try {
-      const { bbcNotificationService } = await import('../services/bbc-notification.service');
-      const { emailService } = await import('../services/email.service');
-      const { User } = await import('./User.model');
-
-      if (doc.source === 'whatsapp_bot') {
-        bbcNotificationService.sendPaidConfirmation(doc).catch(err =>
-          console.error('[OrderModel] sendPaidConfirmation error:', err)
-        );
-      }
-
-      const user = await User.findById(doc.user).select('name email');
-      if (user?.email) {
-        emailService.sendOrderConfirmation(user.email, user.name, String(doc._id), doc.total).catch(() => {});
-      }
-    } catch (err) {
-      console.error('[OrderModel] post-save notification error:', err);
-    }
-  }
 });
 
 export const Order = model<IOrder>('Order', orderSchema);

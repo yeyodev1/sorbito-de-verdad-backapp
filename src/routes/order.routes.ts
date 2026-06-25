@@ -23,6 +23,7 @@ import {
   whatsappBotTransfer,
   whatsappBotTransferReceipt,
   whatsappBotSearchOrder,
+  whatsappBotComplaint,
 } from '../controllers/order.controller';
 import { authMiddleware, optionalAuthMiddleware } from '../middlewares/auth.middleware';
 
@@ -46,6 +47,8 @@ orderRouter.get('/whatsapp-bot/transfer-receipt', whatsappBotTransferReceipt);
 orderRouter.post('/whatsapp-bot/transfer-receipt', whatsappBotTransferReceipt);
 orderRouter.post('/whatsapp-bot/search-order', whatsappBotSearchOrder);
 orderRouter.get('/whatsapp-bot/search-order', whatsappBotSearchOrder);
+orderRouter.post('/whatsapp-bot/complaint', whatsappBotComplaint);
+orderRouter.get('/whatsapp-bot/complaint', whatsappBotComplaint);
 orderRouter.post('/:id/payphone-link', createPayphoneLink);
 orderRouter.post('/payphone', optionalAuthMiddleware, createPayphoneOrder);
 orderRouter.post('/confirm-payment', optionalAuthMiddleware, confirmPayphonePayment);

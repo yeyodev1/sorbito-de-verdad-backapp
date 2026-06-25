@@ -10,8 +10,17 @@ import { AuthRequest } from '../types/AuthRequest';
 import { emailService } from '../services/email.service';
 import { payphoneService } from '../services/payphone.service';
 import { payphoneLinksService } from '../services/payphone-links.service';
-import { bbcNotificationService } from '../services/bbc-notification.service';
 import { cloudinaryService } from '../services/cloudinary.service';
+
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return Math.abs(hash).toString(36);
+}
 
 export const createOrder = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
@@ -778,11 +787,6 @@ export const payphoneLinkWebhook = async (req: Request, res: Response, next: Nex
       order.status = 'confirmed';
       if (transactionId) order.payphoneTransactionId = String(transactionId);
       await order.save();
-
-      // Outbound WhatsApp confirmation — para TODAS las órdenes con teléfono
-      bbcNotificationService.sendPaidConfirmation(order).catch(err =>
-        console.error('[PayphoneLinkWebhook] sendPaidConfirmation error:', err)
-      );
 
       // Email confirmation (best-effort)
       try {
@@ -1574,7 +1578,7 @@ TU TAREA: Analiza SIEMPRE el historial + último mensaje. Decide el intent, resp
 INTENTS:
 - "catalog": cliente pide ver catálogo, productos, tazas, opciones, fotos, qué venden
 - "shipping": cliente pregunta costos envío, delivery, a dónde envían, tiempos
-- "transfer": cliente dice que quiere pagar por transferencia bancaria
+- "transfer": cliente dice EXPLÍCITAMENTE que quiere pagar por transferencia bancaria. SOLO palabras clave: "transferencia", "depósito", "transfer", "deposito", "banco", "produbanco". NUNCA uses este intent como fallback o para mensajes genéricos como "cuánto vale", "holi", "buenos días", "gracias", emojis, textos vacíos, o contenido multimedia.
 - "checkout": cliente confirma su compra con "sí", "confirmo", "ok", "pagar", "listo", "vamos", "dale", etc. — Y previamente recibió un resumen del pedido
 - "search_order": cliente quiere saber el estado de su pedido, rastrear, tracking, consultar, "dónde está mi pedido", "cómo va mi pedido", "ver mi pedido"
 - "chat": cualquier otra cosa (saludos, preguntas, selección de productos, dar datos)
@@ -1585,7 +1589,7 @@ CRÍTICO — REGLAS PARA readyToCheckout:
 - Si intent es catalog/shipping/search_order/chat (no confirmación), readyToCheckout=false
 - Si el cliente quiere ver productos, intent="catalog" y reply="".
 - Si el cliente pregunta envío, intent="shipping" y reply="".
-- Si el cliente elige transferencia, intent="transfer".
+- Si el cliente elige EXPLÍCITAMENTE transferencia, intent="transfer".
 - Si ya hay producto(s) y todos los datos, calcula subtotal con el catálogo real, envío con la zona real, total=subtotal+shipping.
 
 TONO Sorbi (para campo "reply"):
@@ -1600,6 +1604,21 @@ REGLAS DE DIRECCIÓN Y LOGÍSTICA (OBLIGATORIO):
 - NUNCA pidas ubicación de Google Maps, pin de ubicación, coordenadas, ni link de Maps.
 - Pide SOLO dirección escrita (calle, número, referencia, ciudad, país) en texto.
 - Si el cliente pregunta por horarios, día de entrega, ruta, o cualquier duda de envío/entrega: responde que "la empresa de logística se contactará contigo para coordinar y entregar sin problema". No prometas fechas ni horas.
+
+REGLAS DE CONFIRMACIÓN DE CIUDAD Y ENVÍO (OBLIGATORIO):
+- Si el cliente YA vio la tabla de costos de envío (historial contiene "Costos de envío" con la tabla), y luego dice su ciudad, NO vuelvas a mostrar la tabla. En lugar de eso, confirma el costo específico: "Perfecto, para [ciudad] el envío es [gratis o $X] (estimado Y días). ¿Continuamos?"
+- Si el cliente menciona su ciudad o país después de ver la tabla, siempre confirma el precio para ese destino específico.
+- Lleva la cuenta de qué datos ya diste para no pedirlos repetidamente.
+
+REGLAS DE CÉDULA/RUC (OBLIGATORIO):
+- Si el cliente da un número que no coincide con 10 o 13 dígitos, pídelo de nuevo UNA SOLA vez.
+- Si vuelve a dar un número inválido (segundo intento), ofrece la opción: "No tengo cédula ecuatoriana. ¿Tienes pasaporte o ID de tu país?"
+- Para clientes de fuera de Ecuador (prefijo +1, +34, etc.), acepta cualquier documento de identidad.
+
+REGLAS DE SESIÓN (OBLIGATORIO):
+- Revisa SIEMPRE el historial completo de la conversación antes de responder.
+- Si la conversación ya tiene varios mensajes, NO te vuelvas a presentar ("Hola soy Sorbi"). Continúa naturalmente.
+- Mantén el contexto de lo que ya se dijo. No reinicies el flujo si el cliente vuelve después de unas horas.
 
 REGLAS DE TRANSFERENCIA (OBLIGATORIO):
 - El ÚNICO banco es *Produbanco*. NUNCA menciones otro banco. NUNCA digas "varios bancos" ni listes alternativas.
@@ -1717,6 +1736,21 @@ PROHIBICIONES:
 - NO invites a confirmar SIN tener los 6 datos.
 - NO pidas ubicación de Google Maps, pin, coordenadas, ni link de Maps. Solo dirección escrita.
 
+REGLAS DE CONFIRMACIÓN DE CIUDAD (OBLIGATORIO):
+- Si el cliente dio su ciudad después de ver la tabla de envíos, confirma "Perfecto para [ciudad] envío gratis (3-5 días hábiles)" y sigue con el siguiente dato. NO repitas la tabla.
+- NO vuelvas a mostrar la tabla de envíos si ya se mostró en esta conversación.
+
+REGLAS DE CÉDULA/RUC:
+- Primera vez que da un número incorrecto: pídelo de nuevo.
+- Segunda vez que da un número incorrecto: ofrece "No tengo cédula ecuatoriana, ¿puedo darte pasaporte?"
+- Para números internacionales (+1, +34, +39, etc.): acepta ID del país de origen.
+
+REGLAS DE SESIÓN:
+- Si el historial tiene más de 3 mensajes, NO te presentes de nuevo.
+- Continúa desde donde se quedó la conversación.
+- Si el cliente vuelve después de horas, continúa normal sin reintroducción.
+- Lleva cuenta de qué datos YA tienes para no pedirlos de nuevo.
+
 REGLAS DE LOGÍSTICA:
 - Cualquier duda de envío, horario, día o ruta de entrega → responde: "la empresa de logística se contactará contigo para coordinar y entregar sin problema". No prometas fechas ni horas.
 
@@ -1734,7 +1768,23 @@ export const whatsappBotBrain = async (req: Request, res: Response) => {
     const history = normalizedHistory;
     const historyMessages = parseHistoryMessages(req.body?.history);
 
-
+    // BUG 2 fix: dedup — skip if same message was processed within 5s for this phone
+    if (phone) {
+      const msgHash = simpleHash(phone + rawMessage);
+      const recent = await TempCart.findOne({ phone }).select('lastMessageHash lastMessageAt').lean();
+      if (recent?.lastMessageHash && recent?.lastMessageAt) {
+        const elapsed = Date.now() - new Date(recent.lastMessageAt).getTime();
+        if (recent.lastMessageHash === msgHash && elapsed < 5000) {
+          res.status(HttpStatusCode.Ok).send({ success: true, cached: true });
+          return;
+        }
+      }
+      // Store hash for dedup tracking (fire-and-forget)
+      TempCart.updateOne(
+        { phone },
+        { $set: { lastMessageHash: msgHash, lastMessageAt: new Date() } }
+      ).catch(() => {});
+    }
 
     // Router endpoint: JSON only. It never writes customer-facing copy.
     const geminiResult = await callGeminiBrain(rawMessage, history, phone);
@@ -2375,12 +2425,6 @@ export const whatsappBotTransferReceipt = async (req: Request, res: Response) =>
       ? `✅💛 ¡Gracias por enviar tu comprobante! La transferencia de tu pedido *${order.orderNumber}* quedó registrada y el pago fue confirmado 🎉 Ha sido un gusto atenderte ☕`
       : '📋💛 Gracias por enviarnos el comprobante. Detectamos una pequeña anomalía en el monto, la cuenta o la imagen, pero no te preocupes — un asesor revisará tu pedido pronto para confirmar la transferencia. Todo está seguro 🔒✨';
 
-    if (order.whatsappPhone || order.shippingAddress?.phone) {
-      bbcNotificationService.sendWhatsApp(order.whatsappPhone || order.shippingAddress.phone, message).catch((err) =>
-        console.error('[whatsappBotTransferReceipt] sendWhatsApp error:', err)
-      );
-    }
-
     res.status(HttpStatusCode.Ok).send({
       success: looksConsistent,
       orderNumber: order.orderNumber,
@@ -2795,6 +2839,55 @@ export const whatsappBotCheckout = async (req: Request, res: Response, next: Nex
       });
     }
 
+    // BUG 12 fix: re-use existing pending order instead of creating duplicate
+    const existingPending = await Order.findOne({
+      user: user._id,
+      paymentMethod: 'payphone',
+      paymentStatus: 'pending',
+    }).sort({ createdAt: -1 });
+    if (existingPending) {
+      const clientTransactionId = buildClientTransactionId(existingPending.orderNumber);
+      const amountCents = Math.round(existingPending.total * 100);
+      const webhookBase = process.env.WEBHOOK_PUBLIC_BASE || '';
+      const urlRedirect = webhookBase ? `${webhookBase}/api/webhook/payphone-link` : undefined;
+      const { paymentLink, expiresAt } = await payphoneLinksService.createPaymentLink({
+        amountCents,
+        taxCents: 0,
+        amountWithoutTaxCents: amountCents,
+        reference: `Orden ${existingPending.orderNumber}`,
+        clientTransactionId,
+        expireInHours: 24,
+        urlRedirect,
+        webhookUrl: urlRedirect,
+      });
+      existingPending.payphoneLinkUrl = paymentLink;
+      existingPending.payphoneLinkExpiresAt = expiresAt;
+      existingPending.clientTransactionId = clientTransactionId;
+      await existingPending.save();
+      if (phone) {
+        TempCart.deleteOne({ phone }).catch(() => {});
+      }
+      const msg =
+        `✅💛 *¡Tu pedido está listo!*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n` +
+        `🧾 Pedido: ${existingPending.orderNumber}\n` +
+        `💰 Total: *$${existingPending.total.toFixed(2)}*\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `💳 *Paga aquí 👇*\n${paymentLink}\n\n` +
+        `⏰ Link válido por 24h\n` +
+        `📲 Paga con PayPhone y te confirmamos al instante ☕✨`;
+      res.status(HttpStatusCode.Ok).json({
+        success: true,
+        message: msg,
+        paymentLink,
+        orderNumber: existingPending.orderNumber,
+        orderId: String(existingPending._id),
+        total: existingPending.total,
+        expiresAt,
+      });
+      return;
+    }
+
     const activeProducts = await Product.find({ isActive: true });
     const fallbackProduct = activeProducts[0];
     if (!fallbackProduct) {
@@ -3073,6 +3166,68 @@ export const whatsappBotSearchOrder = async (req: Request, res: Response) => {
     res.status(HttpStatusCode.Ok).send({
       success: false,
       message: '❌ Tuve un problema buscando tus pedidos. Intenta de nuevo con tu teléfono o correo.',
+    });
+  }
+};
+
+// ── WhatsApp Bot — Complaint / escalation endpoint (BUG 9 fix) ───────────
+export const whatsappBotComplaint = async (req: Request, res: Response) => {
+  try {
+    const body = req.method === 'GET' ? req.query : req.body;
+    const phone = String(body?.phone || body?.whatsappPhone || '').replace(/[^0-9+]/g, '');
+    const email = String(body?.email || body?.customerEmail || '').toLowerCase().trim();
+    const description = String(body?.description || body?.message || body?.complaint || 'No especificado').trim();
+    const caseId = `REC-${Date.now().toString(36).toUpperCase().slice(-8)}`;
+
+    // Tag the latest order with RECLAMO note
+    let user: any = null;
+    if (email) {
+      user = await User.findOne({ email });
+    }
+    if (!user && phone) {
+      const orderByPhone = await Order.findOne({
+        $or: [
+          { whatsappPhone: { $regex: phone.slice(-9) } },
+          { 'shippingAddress.phone': { $regex: phone.slice(-9) } },
+        ],
+      }).sort({ createdAt: -1 }).populate('user');
+      if (orderByPhone) user = orderByPhone.user;
+    }
+    if (user) {
+      const latestOrder = await Order.findOne({ user: user._id }).sort({ createdAt: -1 });
+      if (latestOrder) {
+        const existingNotes = latestOrder.notes || '';
+        const complaintNote = `[RECLAMO ${caseId}]: ${description}`;
+        latestOrder.notes = existingNotes
+          ? `${existingNotes}\n${complaintNote}`
+          : complaintNote;
+        await latestOrder.save();
+      }
+    }
+
+    // Notify team via email (fire-and-forget)
+    const teamEmail = process.env.ADMIN_EMAIL || 'admin@sorbitodeverdad.com';
+    try {
+      await emailService.sendOrderStatusUpdate(
+        teamEmail,
+        'Equipo Sorbito',
+        '',
+        `Caso ${caseId}`,
+        'RECLAMO',
+        `Tel: ${phone || 'N/A'}\nEmail: ${email || 'N/A'}\n\nDescripción:\n${description}`
+      );
+    } catch {}
+
+    res.status(HttpStatusCode.Ok).send({
+      success: true,
+      message: `✅ Tu caso #${caseId} fue registrado. Un asesor te responderá en máximo 24 horas. 💛`,
+      caseId,
+    });
+  } catch (error: any) {
+    console.error('[whatsappBotComplaint] error:', error?.message || error);
+    res.status(HttpStatusCode.Ok).send({
+      success: false,
+      message: '☕💛 Tu consulta fue registrada. Un asesor te contactará pronto.',
     });
   }
 };

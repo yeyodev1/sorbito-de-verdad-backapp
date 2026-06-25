@@ -18,6 +18,8 @@ export interface ITempCart extends Document {
     shippingCost?: number;
     total?: number;
   };
+  lastMessageHash?: string;
+  lastMessageAt?: Date;
   updatedAt: Date;
   createdAt: Date;
 }
@@ -47,5 +49,8 @@ const tempCartSchema = new Schema<ITempCart>(
 
 // TTL: docs auto-delete 2h after last update
 tempCartSchema.index({ updatedAt: 1 }, { expireAfterSeconds: 7200 });
+
+// Index for dedup queries
+tempCartSchema.index({ lastMessageHash: 1 });
 
 export const TempCart = model<ITempCart>('TempCart', tempCartSchema);
